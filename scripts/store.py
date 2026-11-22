@@ -38,6 +38,9 @@ import signal_feed as SF  # noqa: E402  (the stage 1 kit: aliases + gate)
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = Path(os.environ.get("SIGNAL_FEED_DB", ROOT / "signal_feed.db"))
 DEFAULT_ALLOWLIST = ROOT / "config" / "allowlist.json"
+# The growth-watch ledger lives on the Grok Bot machine and is owned by that routine.
+# Signal Feed only ever reads it (opened "r"); never move, edit or copy it into the repo.
+LEDGER_ENV = "LEDGER_PATH"
 
 SCHEMA_VERSION = 2  # v2: documents table (agenda/minutes links from stage b)
 DEDUPE_WINDOW_DAYS = 14
@@ -582,7 +585,8 @@ def main(argv: List[str] = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     imp = sub.add_parser("import")
-    imp.add_argument("ledger")
+    imp.add_argument("ledger", nargs="?", default=os.environ.get(LEDGER_ENV, ""),
+                     help="ledger JSONL (default: env %s)" % LEDGER_ENV)
     imp.add_argument("--allowlist", default=str(DEFAULT_ALLOWLIST))
     exp = sub.add_parser("export")
     exp.add_argument("out")
@@ -592,6 +596,10 @@ def main(argv: List[str] = None) -> int:
     store = Store(a.db)
     try:
         if a.cmd == "import":
+            if not a.ledger:
+                p.error("no ledger: pass a path or set %s" % LEDGER_ENV)
+            if not Path(a.ledger).is_file():
+                p.error("ledger not found: %s" % a.ledger)
             print("sources synced: %d" % store.load_allowlist(a.allowlist))
             print(json.dumps(store.import_ledger(a.ledger)))
             for al in store.open_alerts():

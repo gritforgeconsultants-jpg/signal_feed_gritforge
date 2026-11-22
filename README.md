@@ -32,12 +32,24 @@ standard library only.
     python scripts/signal_feed.py draft --out out/ --week-of 2026-11-27
 
 ### Run against the real ledger
-    python scripts/signal_feed.py verify --ledger /workspace/commercial-growth/04-ledger/events.jsonl --since 2026-11-16 --out out/
+The ledger belongs to the growth-watch routine on the Grok Bot machine, which
+appends to it weekdays around 9 AM and 3 PM America/Denver. Signal Feed only
+reads it: never move, edit or copy it into this repo. Point at it with
+`LEDGER_PATH`:
+
+    export LEDGER_PATH=/workspace/commercial-growth/04-ledger/events.jsonl
+    python scripts/signal_feed.py verify --since 2026-11-16 --out out/
     python scripts/signal_feed.py draft --out out/
+
+Tests use a copied line in `tests/fixtures/ledger/events-sample.jsonl`, never
+the real file.
 
 If the ledger uses different field names, add them to `FIELD_ALIASES` at the top
 of the script. Items need: date, place, state, action, source_url (plus
-source_type when you know it).
+source_type when you know it). The watch ledger maps `observed_at` to date,
+`metro_or_submarket` to place, and `name` to project (and to action, since it
+has no action field). It has no `source_type`, so the gate classifies by the
+`source_url` domain.
 
 ### Hook into the Grok Bot routine
 After the PM watch on Fridays: run `verify`, then `draft`, then email
@@ -62,7 +74,7 @@ until the send path is trusted. If `out/alerts.txt` is not empty, stop.
 SQLite (`signal_feed.db`, override with `SIGNAL_FEED_DB`) with tables items,
 sources, runs, alerts, subscribers, issues, sends. Standard library only.
 
-    python scripts/store.py import /workspace/commercial-growth/04-ledger/events.jsonl
+    python scripts/store.py import                 # reads $LEDGER_PATH (or pass a path)
     python scripts/store.py stats
     python scripts/store.py export out/audit.jsonl     # JSONL audit copy
 

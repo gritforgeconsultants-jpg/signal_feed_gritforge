@@ -11,3 +11,6 @@ out/
 __pycache__/
 *.py[cod]
 .venv/
+
+# The real ledger belongs to the growth-watch routine; never commit a copy
+events.jsonl

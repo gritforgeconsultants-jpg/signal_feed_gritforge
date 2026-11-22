@@ -18,7 +18,7 @@ Ledger fields read (rename in FIELD_ALIASES if the growth-watch ledger differs):
   source_type (official|trade_press|ai_summary|...), status, notes
 Nothing here sends mail. Delivery stays a manual Send until you trust it.
 """
-import argparse, json, re, sys
+import argparse, json, os, re, sys
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
@@ -57,6 +57,9 @@ def apply_aliases(raw):
     for k, v in raw.items():
         if k in FIELD_ALIASES:
             it.setdefault(FIELD_ALIASES[k], v)
+    # The watch ledger has no action field; its name is the full signal sentence.
+    if not str(it.get("action") or "").strip() and str(it.get("project") or "").strip():
+        it["action"] = it["project"]
     # observed_at is a timestamp in the watch ledger; the gate and dedupe use the day.
     d = str(it.get("date") or "")
     if re.match(r"\d{4}-\d{2}-\d{2}[T ]", d):
@@ -139,6 +142,10 @@ def classify(it, sources):
 
 
 def cmd_verify(a):
+    if not a.ledger:
+        sys.exit("No ledger: pass --ledger or set LEDGER_PATH")
+    if not Path(a.ledger).exists():
+        sys.exit(f"Ledger not found: {a.ledger}")
     allow = json.loads(Path(a.allowlist).read_text(encoding="utf-8"))
     sources = allow["sources"]
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
@@ -228,7 +235,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = p.add_subparsers(dest="cmd", required=True)
     v = sp.add_parser("verify")
-    v.add_argument("--ledger", required=True)
+    v.add_argument("--ledger", default=os.environ.get("LEDGER_PATH", ""),
+                   help="ledger JSONL (default: env LEDGER_PATH)")
     v.add_argument("--allowlist", default="config/allowlist.json")
     v.add_argument("--out", default="out")
     v.add_argument("--since", default="")

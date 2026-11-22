@@ -10,7 +10,7 @@ A paid weekly email of public construction signals (Texas and Colorado first) fo
 
 - Repo: `gritforgeconsultants-jpg/signal_feed_gritforge`
 - Work branch: `claude/wizardly-thompson-932ype` (not merged to `main` yet; `main` has only the original README)
-- Tests: `python -m unittest discover -s tests -v` (stdlib only, Python 3.9+). 120 passing (checked on 3.9, 3.12 and 3.13). CI: `.github/workflows/tests.yml`, 3.9 and 3.12, every push.
+- Tests: `python -m unittest discover -s tests -v` (stdlib only, Python 3.9+). 129 passing (checked on 3.9, 3.12 and 3.13). CI: `.github/workflows/tests.yml`, 3.9 and 3.12, every push.
 
 ## Build order (stop after each stage for Arron's review)
 
@@ -56,11 +56,15 @@ Only sources with `tier=official` AND `status=active` in `config/allowlist.json`
 4. (stage b) First-match domain lookup could have let to_confirm Austin permits pass through the council entry; fixed.
 5. (stage b) San Antonio is CKAN, not Socrata; the Socrata URL in the Clark Iron permits module is why it 404'd there. Resource id and columns still unknown.
 6. (stage b) The Clark Iron SAM module sends NAICS as `naicsCode=` with a comma list; the documented parameter is `ncode`, one code. Worth checking on that side; not touched from here.
+8. (ledger) `notes` carries routine-internal text ("[tier=mid; corridor=...]", "NEW to ledger (missed Nov 3)"). The kit's draft prints notes in subscriber copy; stage d must not.
+9. (ledger) `event_id` is a stable id and `supersedes` links revisions; dedupe could key on them instead of normalized text. Not done; decide before stage d.
+10. (ledger) `value_usd` can be an authorization cap (Aspen: "up to $100M" in bonds), not a contract value. Label as projection per the verification rule.
 7. (stage b) Alerts are not deduplicated: a source failing every run adds an alert each run. Stage f should collapse repeats.
 
 ## Open items (ask Arron if not yet answered)
 
-1. **Real ledger** (`/workspace/commercial-growth/04-ledger/events.jsonl`) still not provided; stage a dry run not done. Needed for the final "done" check.
+1. **Real ledger** lives on the Grok Bot machine at `/workspace/commercial-growth/04-ledger/events.jsonl`, owned by the growth-watch routine (read-only; never move, edit or commit it). Code reads env `LEDGER_PATH`; tests use `tests/fixtures/ledger/events-sample.jsonl` (one copied line). Fields: event_id, observed_at, first_seen_at, region, metro_or_submarket, state, name, signal_type, stage, pipeline_stage, sector, steel_relevance, confidence, value_usd, source_name, source_url, notes, precursor_of, supersedes; no source_type, no action. Stage a dry run still not done: it has to run on that machine (or the file shared into the session).
+1a. Fixed: the ledger has no action field, so every real row was held as "missing action" even on an official domain. `name` now fills action when action is empty.
 2. **`tools/sam_pull.py`** was not provided; the SAM collector was built new from the query pattern in `clean_web_engine` (copied, not imported). If the script exists, compare its query before retiring it.
 3. Stage b review sign-off.
 3a. **First live SAM run** needs `SAM_API_KEY` and network to api.sam.gov; run with `--record` and compare to the fixture. Also set `terms_checked` on sam-gov (active with an empty date today).
@@ -103,4 +107,4 @@ Collectors, one module per source type, each returning ledger-format items with 
 
 ## Env vars so far
 
-- `SIGNAL_FEED_DB` (optional), `SAM_API_KEY` (sam-gov collector). Optional: a Legistar token via the env var named in a block's `token_env`.
+- `LEDGER_PATH` (the growth-watch ledger), `SIGNAL_FEED_DB` (optional), `SAM_API_KEY` (sam-gov collector). Optional: a Legistar token via the env var named in a block's `token_env`.
