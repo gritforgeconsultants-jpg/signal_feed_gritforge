@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GritForge Signal Feed: draft</title>
+<!-- DRAFT. Not published. Prices are estimates until a live checkout exists. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #dfe2df;        /* poured concrete */
+  --surface: #f2f3f1;
+  --ink: #1d2124;
+  --muted: #555c61;
+  --flag: #d92a7a;      /* survey flagging tape */
+  --line: #b9bebb;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1e20; --surface: #24282b; --ink: #e8eae8; --muted: #a4abaf;
+    --flag: #ff5aa3; --line: #3a4044; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1e20; --surface: #24282b; --ink: #e8eae8; --muted: #a4abaf;
+  --flag: #ff5aa3; --line: #3a4044; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 1.0625rem/1.6 "Barlow", "Helvetica Neue", Arial, sans-serif;
+}
+main { max-width: 44rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+h1 {
+  font: 700 clamp(2.4rem, 7vw, 3.6rem)/1.02 "Barlow Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: -0.01em; margin: 0 0 1rem;
+}
+.sub { font-size: 1.2rem; color: var(--muted); margin: 0 0 2.5rem; max-width: 34rem; }
+.item {
+  background: var(--surface); border-left: 6px solid var(--flag);
+  padding: 1.1rem 1.25rem 1.2rem; margin: 0 0 1rem;
+}
+.item .where { font-weight: 600; }
+.item .status { display: inline-block; margin-top: .6rem; font-weight: 600; color: var(--flag); }
+.item.ok { border-left-color: var(--ink); }
+.item.ok .status { color: var(--ink); }
+.caption { font-size: .95rem; color: var(--muted); margin: 0 0 3rem; }
+h2 { font: 600 1.6rem/1.2 "Barlow Condensed", "Arial Narrow", sans-serif; margin: 2.5rem 0 .75rem; }
+p { max-width: 38rem; }
+table { width: 100%; border-collapse: collapse; margin: .5rem 0 1rem; }
+.scroll { overflow-x: auto; }
+th, td { text-align: left; padding: .7rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; }
+td.price { white-space: nowrap; font-weight: 600; }
+.cta {
+  display: inline-block; margin-top: 1rem; padding: .8rem 1.3rem; background: var(--ink); color: var(--bg);
+  font-weight: 600; text-decoration: none;
+}
+.cta:focus-visible, a:focus-visible { outline: 3px solid var(--flag); outline-offset: 3px; }
+.fine { margin-top: 3rem; font-size: .9rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>A weekly list of new commercial work in Texas and Colorado, taken from public records.</h1>
+  <p class="sub">Council votes, large permits, and public bid notices, with a source link on every item.</p>
+
+  <div class="item ok">
+    <div class="where">[Place, County, TX]. [Date]</div>
+    <div>[What happened: council vote, permit, or solicitation, in one or two sentences.]</div>
+    <div>Why it matters: [the trade scope it points to].</div>
+    <div class="status">Confirmed on the official packet. Source link included.</div>
+  </div>
+  <div class="item">
+    <div class="where">[Place, County, TX]. [Date]</div>
+    <div>[A reported item that only trade press or a meeting summary has covered so far.]</div>
+    <div class="status">Unverified. Held until the official minutes confirm it.</div>
+  </div>
+  <p class="caption">How items read. Placeholders here; replace with real confirmed items from a past issue before the page goes live.</p>
+
+  <p>I already read the city and county packets and the public bid sites for my own work, and I got tired of finding out about a job after the bid window was half gone. This is that reading, sent to you once a week. Each item tells you where it is, what happened, the date, and where I got it. If I cannot tie it to an official source, I do not send it as confirmed.</p>
+  <p>It starts in Texas and Colorado. If you also want same-day alerts, public bids for the metros you work, or the larger national jobs, there is a higher tier for that.</p>
+
+  <h2>Tiers (estimates)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>Tier</th><th>Per month</th><th>What you get</th></tr>
+    <tr><td>Regional Digest</td><td class="price">$49</td><td>The weekly Texas and Colorado list.</td></tr>
+    <tr><td>Trade Watch</td><td class="price">$99</td><td>The list, plus same-day alerts and public bids and permits in the metros you pick.</td></tr>
+    <tr><td>National Desk</td><td class="price">$199</td><td>All of that, plus the larger out-of-state jobs and a Friday brief.</td></tr>
+  </table>
+  </div>
+
+  <p>I can send you last week's issue so you can see how it reads. Let me know if you have any questions.</p>
+  <a class="cta" href="#">Send me last week's issue</a>
+
+  <p class="fine">This is a reading of public information. It is not a bid invitation, and it can be wrong. Confirm the official source before you act. Prices are estimates until the live checkout says otherwise. GritForge Consultants.</p>
+</main>
+</body>
+</html>

@@ -1,62 +1,37 @@
-# GritForge Signal Feed
+# GritForge Signal Feed: build kit (Sunday 22 Nov 2026)
 
-A paid weekly email of public construction signals (TX and CO first). Built in
-stages; each stage stops for review.
+Build only. Nothing here sends mail, signs up for anything, or contacts anyone.
+GritForge Consultants work; keep it out of Clark Iron systems and files.
 
-| Stage | Scope | Status |
-|---|---|---|
-| a | SQLite store + tests | built |
-| b | Collectors: SAM.gov, Austin/San Antonio open data | not started |
-| c | Confirmation helper + admin queue | not started |
-| d | Issue builder tiers | not started |
-| e | Web app + Stripe test mode | not started |
-| f | Delivery (REVIEW mode), alerts, schedule | not started |
+## Drop-in
+Copy this folder to the box (suggested: `/workspace/signal-feed/`). Python 3.9+,
+standard library only.
 
-## The rule
+## Files
+- `config/allowlist.json` - TX / CO / federal source allowlist. Only `official` + `active` sources can put an item in a paid issue. Most are `to_confirm` until you open each site and check its terms.
+- `docs/verification-rule.md` - the one-paragraph rule the routine follows.
+- `docs/qc-checklist.md` - the weekly hour plus same-day failure alerts.
+- `docs/confirm-worksheet.md` - Mon/Tue checklist for Red Oak, Rosenberg, Aspen.
+- `scripts/signal_feed.py` - `verify` (gate + dedupe + alerts) and `draft` (subscriber issue + internal review copy).
+- `templates/friday-email.txt` - Friday email, your voice.
+- `samples/sample-items.jsonl` - Red Oak, Rosenberg, Aspen from the 20 Nov watches.
+- `samples/test-fixtures.jsonl` - fake TEST items that exercise every gate path.
+- `drafts/landing-page.html`, `drafts/outreach-drafts.md` - not published, not sent.
+- `out/` - the sample run (see below).
 
-Only a source with `tier=official` AND `status=active` can put an item in a
-paid issue. Trade press, local news and AI summaries are leads; their items
-stay `unverified` until an official packet, minutes, filing, release or API
-record confirms them. Dodge, ConstructConnect, BuildingConnected and PlanHub
-are hard-blocked in code; the allowlist cannot unblock them.
+## Run against the sample
+    python scripts/signal_feed.py verify --ledger samples/sample-items.jsonl --out out/
+    python scripts/signal_feed.py draft --out out/ --week-of 2026-11-27
 
-The store enforces this a second time behind the gate:
+## Run against the real ledger
+    python scripts/signal_feed.py verify --ledger /workspace/commercial-growth/04-ledger/events.jsonl --since 2026-11-16 --out out/
+    python scripts/signal_feed.py draft --out out/
 
-- `upsert_item(..., gate=...)` takes the verify step's verdict but can only
-  downgrade the domain verdict, never upgrade a lead or blocked link.
-- `paid_eligible_items()` is the only query an issue builder should use. It
-  re-checks each item's `official_url` against the live `sources` table, so
-  pausing or blocking a source drops its items from the next issue.
+If the ledger uses different field names, add them to `FIELD_ALIASES` at the top
+of the script. Items need: date, place, state, action, source_url (plus
+source_type when you know it).
 
-## Store (stage a)
-
-```bash
-cd signal-feed
-python scripts/store.py init
-python scripts/store.py import path/to/events.jsonl --allowlist config/allowlist.json
-python scripts/store.py stats
-python scripts/store.py export out/audit.jsonl     # JSONL audit copy
-```
-
-The DB path defaults to `signal-feed/signal_feed.db`; override with
-`SIGNAL_FEED_DB`. The DB and `out/` are gitignored.
-
-Dedupe key: normalized `(state, place, project)`. A row whose first sighting
-is within 14 days of an existing item merges into it (URLs, tags and size are
-combined; a later official link upgrades a held item and the lead URL is kept
-as the secondary link). Outside 14 days it is a new item.
-
-### Turning a source active
-
-Set `"status": "active"` on its entry in `config/allowlist.json` and re-run
-`import` (which re-syncs sources). An official source without a status
-defaults to `to_confirm`, which never publishes.
-
-## Tests
-
-```bash
-python -m unittest discover -s signal-feed/tests -v
-```
-
-Standard library only, Python 3.9+. CI runs this on every push
-(`.github/workflows/signal-feed.yml`).
+## Hook into the Grok Bot routine
+After the PM watch on Fridays: run `verify`, then `draft`, then email
+`out/issue-review.txt` to yourself. You press Send on `issue-subscriber.txt`
+until the send path is trusted. If `out/alerts.txt` is not empty, stop.
