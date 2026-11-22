@@ -3,7 +3,7 @@
 Standard library only, Python 3.9+. Replaces the flat JSONL files as the
 working store; JSONL stays as the audit export.
 
-Tables: items, sources, runs, alerts, subscribers, issues, sends.
+Tables: items, sources, runs, alerts, subscribers, issues, sends, documents.
 
 One gate: signal_feed.classify() decides verified vs held, using the
 sources table (synced from config/allowlist.json). The store adds a backstop
@@ -39,11 +39,19 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = Path(os.environ.get("SIGNAL_FEED_DB", ROOT / "signal_feed.db"))
 DEFAULT_ALLOWLIST = ROOT / "config" / "allowlist.json"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: documents table (agenda/minutes links from stage b)
 DEDUPE_WINDOW_DAYS = 14
 
 HARD_BLOCKED_DOMAINS = ("construction.com", "constructconnect.com",
                         "buildingconnected.com", "planhub.com")
+
+# Hosting vendors that serve many cities from one apex domain. Listing the apex on a
+# source would make every city on that vendor pass as that source, so the store drops
+# it. List the city's own subdomain instead (sanantonio.legistar.com, not legistar.com).
+SHARED_HOST_APEXES = ("legistar.com", "granicus.com", "civicplus.com", "civicweb.net",
+                      "municode.com", "novusagenda.com", "boarddocs.com", "primegov.com",
+                      "arcgis.com", "socrata.com", "amazonaws.com", "cloudfront.net",
+                      "googleusercontent.com", "box.com", "dropbox.com")
 
 GATE_VERIFIED = "verified"
 GATE_UNVERIFIED = "unverified"
@@ -162,6 +170,20 @@ CREATE TABLE IF NOT EXISTS sends (
     created_at TEXT NOT NULL,
     sent_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,                    -- agenda, minutes and packet links; never items
+    source_id TEXT NOT NULL,
+    platform TEXT,                             -- legistar | civicplus | granicus
+    body TEXT,                                 -- e.g. City Council
+    meeting_date TEXT,                         -- YYYY-MM-DD
+    kind TEXT NOT NULL,                        -- agenda | minutes | packet | meeting
+    title TEXT,
+    url TEXT NOT NULL UNIQUE,
+    first_run_id INTEGER REFERENCES runs(id),
+    first_seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_documents_src ON documents(source_id, meeting_date);
 """
 
 _PUNCT = re.compile(r"[^a-z0-9\s]+")
@@ -241,9 +263,11 @@ class Store:
         self.conn.close()
 
     # ── sources ──────────────────────────────────────────────────────────
-    def upsert_source(self, src: Dict[str, Any]) -> None:
-        """Insert or update one allowlist entry (kit format)."""
-        domains = [d.lower() for d in src.get("domains", []) or []]
+    def upsert_source(self, src: Dict[str, Any]) -> List[str]:
+        """Insert or update one allowlist entry (kit format). Returns any domains it refused."""
+        domains = [d.lower().strip() for d in src.get("domains", []) or []]
+        refused = [d for d in domains if d.removeprefix("www.") in SHARED_HOST_APEXES]
+        domains = [d for d in domains if d not in refused]
         tier, status = src.get("tier", "lead"), src.get("status", "to_confirm")
         if any(_hard_blocked(d) for d in domains):
             tier = "blocked"
@@ -260,6 +284,7 @@ class Store:
                 (src["id"], src.get("name", src["id"]), src.get("region"), tier, status,
                  json.dumps(domains), src.get("method"), src.get("cadence"),
                  src.get("terms_checked"), src.get("notes"), json.dumps(extra), _now()))
+        return refused
 
     def set_source_status(self, source_id: str, status: str) -> None:
         with self.tx() as c:
@@ -269,7 +294,11 @@ class Store:
         """Sync the sources table from allowlist.json. Sources removed from the file are deleted."""
         sources = json.loads(Path(path).read_text(encoding="utf-8"))["sources"]
         for s in sources:
-            self.upsert_source(s)
+            for d in self.upsert_source(s):
+                self.add_alert("allowlist_error",
+                               "%s lists the shared vendor domain %s; it was ignored. List the "
+                               "city's own subdomain instead (e.g. cityname.%s)" % (s["id"], d, d),
+                               source=str(path))
         ids = [s["id"] for s in sources]
         with self.tx() as c:
             c.execute("DELETE FROM sources WHERE id NOT IN (%s)" % ",".join("?" * len(ids)), ids)
@@ -281,8 +310,12 @@ class Store:
         for r in self.conn.execute("SELECT * FROM sources ORDER BY id"):
             d = dict(r)
             d["domains"] = json.loads(d["domains"])
+            d["config"] = json.loads(d.pop("config_json") or "{}")
             out.append(d)
         return out
+
+    def source(self, source_id: str) -> Optional[Dict[str, Any]]:
+        return next((s for s in self.sources() if s["id"] == source_id), None)
 
     def source_for_url(self, url: Optional[str]) -> Optional[Dict[str, Any]]:
         return SF.match_source(SF.host_of(url or ""), self.sources())
@@ -326,6 +359,29 @@ class Store:
             return c.execute(
                 "INSERT INTO alerts (run_id, kind, source, message, created_at) VALUES (?,?,?,?,?)",
                 (run_id, kind, source, message, _now())).lastrowid
+
+    def recent_runs(self, source_id: str, kind: str = "collect", n: int = 2) -> List[sqlite3.Row]:
+        """Last n finished runs for a source, newest first. Skipped runs are not counted."""
+        return self.conn.execute(
+            """SELECT * FROM runs WHERE source_id=? AND kind=? AND finished_at IS NOT NULL
+                 AND status != 'skipped' ORDER BY id DESC LIMIT ?""", (source_id, kind, n)).fetchall()
+
+    # ── documents (agenda and minutes links; stage c reads these) ────────
+    def upsert_document(self, doc: Dict[str, Any], *, run_id: int = None) -> bool:
+        """Record one agenda/minutes/packet link. Returns True if it was new."""
+        with self.tx() as c:
+            cur = c.execute(
+                """INSERT OR IGNORE INTO documents (source_id, platform, body, meeting_date, kind,
+                     title, url, first_run_id, first_seen_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (doc["source_id"], doc.get("platform"), doc.get("body"), doc.get("meeting_date"),
+                 doc["kind"], doc.get("title"), doc["url"], run_id, _now()))
+            return cur.rowcount == 1
+
+    def documents(self, source_id: str = None) -> List[sqlite3.Row]:
+        if source_id:
+            return self.conn.execute("SELECT * FROM documents WHERE source_id=? ORDER BY meeting_date, id",
+                                     (source_id,)).fetchall()
+        return self.conn.execute("SELECT * FROM documents ORDER BY meeting_date, id").fetchall()
 
     def open_alerts(self) -> List[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM alerts WHERE resolved_at IS NULL ORDER BY id").fetchall()
@@ -498,6 +554,7 @@ class Store:
             "sources_by_tier_status": {"%s/%s" % (r[0], r[1]): r[2]
                                        for r in q("SELECT tier, status, COUNT(*) FROM sources GROUP BY 1, 2")},
             "open_alerts": len(self.open_alerts()),
+            "documents": q("SELECT COUNT(*) FROM documents")[0][0],
             "runs": q("SELECT COUNT(*) FROM runs")[0][0],
         }
 
