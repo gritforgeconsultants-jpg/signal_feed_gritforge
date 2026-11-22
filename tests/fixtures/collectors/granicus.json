@@ -1,0 +1,15 @@
+{
+ "_note": "Hand-built from the documented response shape, not a live recording (the build container had no network to these hosts). Replace with `collect.py run --record` output once the source is active. Records are synthetic TEST data.",
+ "requests": [
+  {
+   "url": "https://testcity.granicus.com/robots.txt",
+   "status": 404,
+   "body": ""
+  },
+  {
+   "url": "https://testcity.granicus.com/ViewPublisherRSS.php?mode=agendas&view_id=2",
+   "status": 200,
+   "body": "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>TEST City - Agendas</title>\n<item><title>City Council - Nov 19, 2026</title><link>https://testcity.granicus.com/AgendaViewer.php?view_id=2&amp;event_id=777</link><pubDate>Mon, 16 Nov 2026 12:00:00 -0700</pubDate></item>\n<item><title>City Council - Nov 5, 2026</title><link>https://testcity.granicus.com/MinutesViewer.php?view_id=2&amp;clip_id=4321</link><pubDate>Thu, 19 Nov 2026 12:00:00 -0700</pubDate></item>\n</channel></rss>"
+  }
+ ]
+}

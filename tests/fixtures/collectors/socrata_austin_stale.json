@@ -1,0 +1,14 @@
+{
+ "_note": "Hand-built from the documented response shape, not a live recording (the build container had no network to these hosts). Replace with `collect.py run --record` output once the source is active. Records are synthetic TEST data.",
+ "requests": [
+  {
+   "url": "https://data.austintexas.gov/resource/3syk-w9eu.json?%24select=max%28issue_date%29+AS+newest",
+   "status": 200,
+   "body": [
+    {
+     "newest": "2026-10-01T00:00:00.000"
+    }
+   ]
+  }
+ ]
+}

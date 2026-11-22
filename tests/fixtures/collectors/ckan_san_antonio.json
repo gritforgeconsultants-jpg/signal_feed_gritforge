@@ -1,0 +1,61 @@
+{
+ "_note": "Hand-built from the documented response shape, not a live recording (the build container had no network to these hosts). Replace with `collect.py run --record` output once the source is active. Records are synthetic TEST data.",
+ "requests": [
+  {
+   "url": "https://data.sanantonio.gov/api/3/action/datastore_search?limit=500&offset=0&resource_id=test-sa-permits&sort=%22DATE+ISSUED%22+desc",
+   "status": 200,
+   "body": {
+    "success": true,
+    "result": {
+     "records": [
+      {
+       "_id": 1,
+       "PERMIT #": "TEST-SA-001",
+       "DATE ISSUED": "2026-11-19",
+       "ADDRESS": "100 TEST PKWY",
+       "WORK TYPE": "New",
+       "PERMIT TYPE": "Comm New Building Permit",
+       "PROJECT NAME": "TEST distribution center",
+       "DECLARED VALUATION": "1500000",
+       "CONTRACTOR": "TEST GC LP"
+      },
+      {
+       "_id": 2,
+       "PERMIT #": "TEST-SA-002",
+       "DATE ISSUED": "2026-11-18",
+       "ADDRESS": "200 TEST RD",
+       "WORK TYPE": "Repair",
+       "PERMIT TYPE": "Comm New Building Permit",
+       "PROJECT NAME": "TEST distribution center",
+       "DECLARED VALUATION": "1500000",
+       "CONTRACTOR": "TEST GC LP"
+      },
+      {
+       "_id": 3,
+       "PERMIT #": "TEST-SA-003",
+       "DATE ISSUED": "2026-11-15",
+       "ADDRESS": "300 TEST AVE",
+       "WORK TYPE": "New",
+       "PERMIT TYPE": "Comm New Building Permit",
+       "PROJECT NAME": "TEST distribution center",
+       "DECLARED VALUATION": "0",
+       "CONTRACTOR": "TEST GC LP"
+      },
+      {
+       "_id": 4,
+       "PERMIT #": "TEST-SA-004",
+       "DATE ISSUED": "2026-11-01",
+       "ADDRESS": "400 OLD ST",
+       "WORK TYPE": "New",
+       "PERMIT TYPE": "Comm New Building Permit",
+       "PROJECT NAME": "TEST distribution center",
+       "DECLARED VALUATION": "1500000",
+       "CONTRACTOR": "TEST GC LP"
+      }
+     ],
+     "total": 4
+    }
+   }
+  }
+ ]
+}

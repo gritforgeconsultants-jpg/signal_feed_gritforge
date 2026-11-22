@@ -1,0 +1,66 @@
+{
+ "_note": "Hand-built from the documented response shape, not a live recording (the build container had no network to these hosts). Replace with `collect.py run --record` output once the source is active. Records are synthetic TEST data.",
+ "requests": [
+  {
+   "url": "https://data.austintexas.gov/resource/3syk-w9eu.json?%24select=max%28issue_date%29+AS+newest",
+   "status": 200,
+   "body": [
+    {
+     "newest": "2026-11-19T00:00:00.000"
+    }
+   ]
+  },
+  {
+   "url": "https://data.austintexas.gov/resource/3syk-w9eu.json?%24limit=1000&%24order=issue_date+DESC&%24where=issue_date+%3E%3D+%272026-11-13T00%3A00%3A00%27+AND+%28permit_class_mapped+in%28%27Commercial%27%2C%27Multi-Family%27%2C%27Mixed+Use%27%29+AND+work_class+in%28%27New%27%2C%27Addition%27%29%29",
+   "status": 200,
+   "body": [
+    {
+     "permit_number": "2026-TEST-001 BP",
+     "permit_type_desc": "Building Permit",
+     "permit_class_mapped": "Commercial",
+     "work_class": "New",
+     "description": "TEST new 3-story office building",
+     "issue_date": "2026-11-19T00:00:00.000",
+     "status_current": "Active",
+     "original_address1": "1200 E TEST BLVD",
+     "contractor_full_name": "TEST BUILDERS INC",
+     "total_job_valuation": "4200000"
+    },
+    {
+     "permit_number": "2026-TEST-002 BP",
+     "permit_type_desc": "Building Permit",
+     "permit_class_mapped": "Commercial",
+     "work_class": "Addition",
+     "description": "TEST shell addition",
+     "issue_date": "2026-11-18T00:00:00.000",
+     "status_current": "Active",
+     "original_address1": "1200 E TEST BLVD",
+     "contractor_full_name": "TEST BUILDERS INC"
+    },
+    {
+     "permit_number": "2026-TEST-003 BP",
+     "permit_type_desc": "Building Permit",
+     "permit_class_mapped": "Multi-Family",
+     "work_class": "New",
+     "description": "TEST 240-unit apartments",
+     "issue_date": "2026-11-17T00:00:00.000",
+     "status_current": "Active",
+     "original_address1": "88 TEST LN",
+     "contractor_full_name": "TEST BUILDERS INC"
+    },
+    {
+     "permit_number": "2026-TEST-004 BP",
+     "permit_type_desc": "Building Permit",
+     "permit_class_mapped": "Commercial",
+     "work_class": "New",
+     "description": "TEST tenant finish",
+     "issue_date": "2026-11-16T00:00:00.000",
+     "status_current": "Active",
+     "original_address1": "5 SMALL ST",
+     "contractor_full_name": "TEST BUILDERS INC",
+     "total_job_valuation": "90000"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,35 @@
+{
+ "_note": "Hand-built from the documented response shape, not a live recording (the build container had no network to these hosts). Replace with `collect.py run --record` output once the source is active. Records are synthetic TEST data.",
+ "requests": [
+  {
+   "url": "https://webapi.legistar.com/v1/testcity/events?%24filter=EventDate+ge+datetime%272026-10-06T00%3A00%3A00%27+and+EventDate+le+datetime%272026-12-04T00%3A00%3A00%27&%24orderby=EventDate",
+   "status": 200,
+   "body": [
+    {
+     "EventId": 1,
+     "EventBodyName": "City Council",
+     "EventDate": "2026-11-17T00:00:00",
+     "EventAgendaFile": "https://testcity.legistar.com/View.ashx?M=A&ID=1001&GUID=TEST",
+     "EventMinutesFile": "https://testcity.legistar.com/View.ashx?M=M&ID=1001&GUID=TEST",
+     "EventInSiteURL": "https://testcity.legistar.com/MeetingDetail.aspx?ID=1001&GUID=TEST"
+    },
+    {
+     "EventId": 2,
+     "EventBodyName": "Planning Commission",
+     "EventDate": "2026-12-01T00:00:00",
+     "EventAgendaFile": "https://testcity.legistar.com/View.ashx?M=A&ID=1002&GUID=TEST",
+     "EventMinutesFile": null,
+     "EventInSiteURL": null
+    },
+    {
+     "EventId": 3,
+     "EventBodyName": "Library Board",
+     "EventDate": "2026-11-18T00:00:00",
+     "EventAgendaFile": "https://testcity.legistar.com/View.ashx?M=A&ID=1003&GUID=TEST",
+     "EventMinutesFile": null,
+     "EventInSiteURL": null
+    }
+   ]
+  }
+ ]
+}

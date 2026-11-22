@@ -348,7 +348,12 @@ class Store:
             return c.execute("INSERT INTO runs (kind, source_id, started_at, note) VALUES (?,?,?,?)",
                              (kind, source_id, _now(), note)).lastrowid
 
-    def finish_run(self, run_id: int, status: str = "ok", **counts: int) -> None:
+    _RUN_FIELDS = ("items_in", "items_new", "items_merged", "note")
+
+    def finish_run(self, run_id: int, status: str = "ok", **counts: Any) -> None:
+        bad = set(counts) - set(self._RUN_FIELDS)
+        if bad:
+            raise ValueError("unknown run field(s): %s" % ", ".join(sorted(bad)))
         sets = "".join(", %s=?" % k for k in counts)
         with self.tx() as c:
             c.execute("UPDATE runs SET finished_at=?, status=?%s WHERE id=?" % sets,

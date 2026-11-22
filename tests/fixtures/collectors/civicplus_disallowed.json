@@ -1,0 +1,15 @@
+{
+ "_note": "Hand-built from the documented response shape, not a live recording (the build container had no network to these hosts). Replace with `collect.py run --record` output once the source is active. Records are synthetic TEST data.",
+ "requests": [
+  {
+   "url": "https://www.testcity-tx.gov/robots.txt",
+   "status": 200,
+   "body": "User-agent: *\nDisallow: /RSSFeed.aspx\n"
+  },
+  {
+   "url": "https://www.testcity-tx.gov/RSSFeed.aspx?CID=All-0&ModID=65",
+   "status": 200,
+   "body": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<rss version=\"2.0\"><channel><title>TEST City Agenda Center</title><link>https://www.testcity-tx.gov/AgendaCenter</link>\n<item><title>City Council - Regular Meeting - Nov 17, 2026</title><link>https://www.testcity-tx.gov/AgendaCenter/ViewFile/Agenda/_11172026-501</link><pubDate>Fri, 13 Nov 2026 17:00:00 -0600</pubDate><category>City Council</category></item>\n<item><title>City Council - Regular Meeting - Nov 17, 2026 (Packet)</title><link>https://www.testcity-tx.gov/AgendaCenter/ViewFile/Agenda/_11172026-501?packet=true</link><pubDate>Fri, 13 Nov 2026 17:00:00 -0600</pubDate><category>City Council</category></item>\n<item><title>City Council - Regular Meeting - Nov 3, 2026</title><link>https://www.testcity-tx.gov/AgendaCenter/ViewFile/Minutes/_11032026-480</link><pubDate>Wed, 18 Nov 2026 09:00:00 -0600</pubDate><category>City Council</category></item>\n<item><title>City Council - Regular Meeting - Sep 1, 2026</title><link>https://www.testcity-tx.gov/AgendaCenter/ViewFile/Agenda/_09012026-300</link><pubDate>Fri, 28 Aug 2026 17:00:00 -0500</pubDate><category>City Council</category></item>\n</channel></rss>"
+  }
+ ]
+}
