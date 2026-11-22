@@ -1,21 +1,23 @@
 """SQLite store for GritForge Signal Feed (stage a).
 
-Standard library only, Python 3.9+. Replaces the flat JSONL ledger as the
+Standard library only, Python 3.9+. Replaces the flat JSONL files as the
 working store; JSONL stays as the audit export.
 
 Tables: items, sources, runs, alerts, subscribers, issues, sends.
 
-Core rule, enforced here as a second line of defense behind the gate in
-signal_feed.py: an item can only be selected for a paid issue when it is
-gate_status='verified' AND its official_url resolves to a source with
-tier='official' AND status='active'. Blocked domains can never be stored as
-anything but 'blocked'.
+One gate: signal_feed.classify() decides verified vs held, using the
+sources table (synced from config/allowlist.json). The store adds a backstop
+that can only make things stricter:
+  - Dodge, ConstructConnect, BuildingConnected, PlanHub are blocked in code;
+    the allowlist cannot unblock them.
+  - A caller-supplied verdict can downgrade, never upgrade.
+  - paid_eligible_items() re-checks each official_url against the live
+    sources table, so pausing a source pulls its items from the next issue.
 
-CLI:
-    python store.py init
-    python store.py import LEDGER.jsonl [--allowlist config/allowlist.json]
-    python store.py export OUT.jsonl
-    python store.py stats
+CLI (run from signal-feed/):
+    python scripts/store.py import LEDGER.jsonl [--allowlist config/allowlist.json]
+    python scripts/store.py export out/audit.jsonl
+    python scripts/store.py stats
 """
 from __future__ import annotations
 
@@ -28,8 +30,10 @@ import sys
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
-from urllib.parse import urlparse
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import signal_feed as SF  # noqa: E402  (the stage 1 kit: aliases + gate)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = Path(os.environ.get("SIGNAL_FEED_DB", ROOT / "signal_feed.db"))
@@ -38,51 +42,34 @@ DEFAULT_ALLOWLIST = ROOT / "config" / "allowlist.json"
 SCHEMA_VERSION = 1
 DEDUPE_WINDOW_DAYS = 14
 
-# Hard block list. Mirrors the prompt's never-touch list; allowlist.json can
-# add more, it can never remove these.
-BLOCKED_DOMAINS = frozenset(
-    {"dodge.construction.com", "construction.com", "constructconnect.com",
-     "buildingconnected.com", "planhub.com"}
-)
+HARD_BLOCKED_DOMAINS = ("construction.com", "constructconnect.com",
+                        "buildingconnected.com", "planhub.com")
 
 GATE_VERIFIED = "verified"
 GATE_UNVERIFIED = "unverified"
 GATE_BLOCKED = "blocked"
 GATE_STATUSES = (GATE_VERIFIED, GATE_UNVERIFIED, GATE_BLOCKED)
 
-# Field aliases: prefer the kit's map so there is one source of truth.
-try:  # pragma: no cover - depends on the stage 1 kit being present
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from signal_feed import FIELD_ALIASES as _KIT_ALIASES  # type: ignore
-
-    FIELD_ALIASES: Dict[str, str] = dict(_KIT_ALIASES)
-except Exception:  # kit not importable; documented ledger fields only
-    FIELD_ALIASES = {
-        "metro_or_submarket": "place",
-        "name": "project",
-        "observed_at": "observed_at",
-        "state": "state",
-        "action": "action",
-        "source_url": "source_url",
-        "source_type": "source_type",
-    }
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
-    id INTEGER PRIMARY KEY,
-    domain TEXT NOT NULL UNIQUE,
-    name TEXT,
-    tier TEXT NOT NULL DEFAULT 'lead',        -- official | lead | blocked
-    status TEXT NOT NULL DEFAULT 'to_confirm', -- active | to_confirm | paused | blocked
-    kind TEXT,                                 -- sam | socrata | ckan | legistar | civicplus | granicus | press
-    state TEXT,
-    config_json TEXT NOT NULL DEFAULT '{}',
+    id TEXT PRIMARY KEY,                       -- allowlist id, e.g. sam-gov
+    name TEXT NOT NULL,
+    region TEXT,
+    tier TEXT NOT NULL,                        -- official | lead | ai_summary | context | blocked
+    status TEXT NOT NULL,                      -- active | to_confirm | ...
+    domains TEXT NOT NULL DEFAULT '[]',
+    method TEXT,
+    cadence TEXT,
+    terms_checked TEXT,
+    notes TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}',    -- any other allowlist keys (dataset ids, agenda urls)
     updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,                        -- import | collect | verify | draft | send
+    source_id TEXT,
     started_at TEXT NOT NULL,
     finished_at TEXT,
     status TEXT NOT NULL DEFAULT 'running',    -- running | ok | error
@@ -95,32 +82,38 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY,
     match_key TEXT NOT NULL,                   -- state|place|project, normalized
-    observed_at TEXT NOT NULL,                 -- YYYY-MM-DD, first sighting (dedupe anchor)
+    date TEXT NOT NULL,                        -- YYYY-MM-DD, earliest sighting (dedupe anchor)
     last_seen_at TEXT NOT NULL,
     state TEXT NOT NULL,
     place TEXT NOT NULL,
-    project TEXT NOT NULL,
+    county TEXT,
+    project TEXT,
     action TEXT,
-    source_type TEXT,                          -- official | press | news | ai | api ...
+    why TEXT,
+    notes TEXT,
+    source_name TEXT,
+    source_type TEXT,
     gate_status TEXT NOT NULL DEFAULT 'unverified'
         CHECK (gate_status IN ('verified','unverified','blocked')),
-    official_url TEXT,                         -- only set from an official source
+    gate_reason TEXT,                          -- verify_note or hold_reason from the gate
+    official_url TEXT,                         -- only ever set from an official+active source
     lead_url TEXT,                             -- first non-official link, kept as secondary
-    source_urls TEXT NOT NULL DEFAULT '[]',    -- every URL seen, JSON array
+    source_urls TEXT NOT NULL DEFAULT '[]',
     trade_tags TEXT NOT NULL DEFAULT '[]',
     size_usd REAL,
-    raw_json TEXT NOT NULL,
+    raw_json TEXT NOT NULL,                    -- first ledger row as received
     first_run_id INTEGER REFERENCES runs(id),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_items_match ON items(match_key, observed_at);
+CREATE INDEX IF NOT EXISTS ix_items_match ON items(match_key, date);
 CREATE INDEX IF NOT EXISTS ix_items_gate ON items(gate_status, state);
 
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY,
     run_id INTEGER REFERENCES runs(id),
-    kind TEXT NOT NULL,                        -- collector_error | stale_dataset | zero_items | schema_change | send_failed | webhook_failed
+    kind TEXT NOT NULL,   -- collector_error | stale_dataset | zero_items | schema_change | send_failed
+                          -- | webhook_failed | marked_confirmed_unverified
     source TEXT,
     message TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -145,7 +138,7 @@ CREATE TABLE IF NOT EXISTS issues (
     id INTEGER PRIMARY KEY,
     issue_date TEXT NOT NULL,
     tier TEXT NOT NULL,
-    state TEXT,                                -- NULL for national
+    state TEXT NOT NULL DEFAULT '',            -- '' for national
     status TEXT NOT NULL DEFAULT 'draft',      -- draft | review_sent | approved | sent | blocked
     item_ids TEXT NOT NULL DEFAULT '[]',
     html TEXT,
@@ -173,31 +166,17 @@ CREATE TABLE IF NOT EXISTS sends (
 
 _PUNCT = re.compile(r"[^a-z0-9\s]+")
 _WS = re.compile(r"\s+")
+_SOURCE_COLS = ("id", "name", "region", "tier", "status", "domains", "method",
+                "cadence", "terms_checked", "notes")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def domain_from_url(url: Optional[str]) -> str:
-    """Host without www., lowercased. Borrowed from cwe/intel/normalize.py."""
-    if not url:
-        return ""
-    try:
-        host = (urlparse(url).hostname or "").lower().strip()
-    except ValueError:
-        return ""
-    return host[4:] if host.startswith("www.") else host
-
-
-def _domain_matches(host: str, domain: str) -> bool:
-    return host == domain or host.endswith("." + domain)
-
-
-def norm_text(value: Optional[str]) -> str:
-    s = (value or "").lower().replace("&", " and ")
-    s = _PUNCT.sub(" ", s)
-    return _WS.sub(" ", s).strip()
+def norm_text(value: Any) -> str:
+    s = str(value or "").lower().replace("&", " and ")
+    return _WS.sub(" ", _PUNCT.sub(" ", s)).strip()
 
 
 def match_key(state: str, place: str, project: str) -> str:
@@ -205,23 +184,30 @@ def match_key(state: str, place: str, project: str) -> str:
 
 
 def parse_day(value: Any) -> date:
-    """Accept YYYY-MM-DD, full ISO timestamps (Z or offset), or a date."""
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
-        return value if not isinstance(value, datetime) else value.date()
+        return value
     s = str(value or "").strip()
     if not s:
-        raise ValueError("observed_at is empty")
+        raise ValueError("missing date")
     try:
         return date.fromisoformat(s[:10])
     except ValueError as exc:
-        raise ValueError("unparseable observed_at: %r" % s) from exc
+        raise ValueError("unparseable date: %r" % s) from exc
 
 
-def apply_aliases(raw: Dict[str, Any]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for key, val in raw.items():
-        out.setdefault(FIELD_ALIASES.get(key, key), val)
-    return out
+def _hard_blocked(host: str) -> bool:
+    return any(host == d or host.endswith("." + d) for d in HARD_BLOCKED_DOMAINS)
+
+
+def _to_float(v: Any) -> Optional[float]:
+    if v in (None, ""):
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("$", ""))
+    except ValueError:
+        return None
 
 
 class Store:
@@ -234,7 +220,6 @@ class Store:
             self.conn.execute("PRAGMA journal_mode = WAL")
         self.init()
 
-    # ── schema ───────────────────────────────────────────────────────────
     def init(self) -> None:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if version > SCHEMA_VERSION:
@@ -256,92 +241,84 @@ class Store:
         self.conn.close()
 
     # ── sources ──────────────────────────────────────────────────────────
-    def upsert_source(self, domain: str, *, tier: str, status: str, name: str = None,
-                      kind: str = None, state: str = None, config: dict = None) -> None:
-        domain = domain_from_url("https://" + domain) if "://" not in domain else domain_from_url(domain)
-        if domain in BLOCKED_DOMAINS or any(_domain_matches(domain, b) for b in BLOCKED_DOMAINS):
-            tier, status = "blocked", "blocked"
+    def upsert_source(self, src: Dict[str, Any]) -> None:
+        """Insert or update one allowlist entry (kit format)."""
+        domains = [d.lower() for d in src.get("domains", []) or []]
+        tier, status = src.get("tier", "lead"), src.get("status", "to_confirm")
+        if any(_hard_blocked(d) for d in domains):
+            tier = "blocked"
+        extra = {k: v for k, v in src.items() if k not in _SOURCE_COLS}
         with self.tx() as c:
             c.execute(
-                """INSERT INTO sources (domain, name, tier, status, kind, state, config_json, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?)
-                   ON CONFLICT(domain) DO UPDATE SET name=excluded.name, tier=excluded.tier,
-                     status=excluded.status, kind=excluded.kind, state=excluded.state,
+                """INSERT INTO sources (id, name, region, tier, status, domains, method, cadence,
+                     terms_checked, notes, config_json, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name, region=excluded.region,
+                     tier=excluded.tier, status=excluded.status, domains=excluded.domains,
+                     method=excluded.method, cadence=excluded.cadence,
+                     terms_checked=excluded.terms_checked, notes=excluded.notes,
                      config_json=excluded.config_json, updated_at=excluded.updated_at""",
-                (domain, name, tier, status, kind, state, json.dumps(config or {}), _now()),
-            )
+                (src["id"], src.get("name", src["id"]), src.get("region"), tier, status,
+                 json.dumps(domains), src.get("method"), src.get("cadence"),
+                 src.get("terms_checked"), src.get("notes"), json.dumps(extra), _now()))
+
+    def set_source_status(self, source_id: str, status: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE sources SET status=?, updated_at=? WHERE id=?", (status, _now(), source_id))
 
     def load_allowlist(self, path: Any = DEFAULT_ALLOWLIST) -> int:
-        """Sync sources from allowlist.json.
+        """Sync the sources table from allowlist.json. Sources removed from the file are deleted."""
+        sources = json.loads(Path(path).read_text(encoding="utf-8"))["sources"]
+        for s in sources:
+            self.upsert_source(s)
+        ids = [s["id"] for s in sources]
+        with self.tx() as c:
+            c.execute("DELETE FROM sources WHERE id NOT IN (%s)" % ",".join("?" * len(ids)), ids)
+        return len(sources)
 
-        Accepts a list of source objects, {"sources": [...]}, or
-        {"official": [...], "leads": [...], "blocked": [...]}. Each entry needs
-        a domain (or url); tier and status default conservatively.
-        """
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        entries: List[dict] = []
-        if isinstance(data, list):
-            entries = data
-        elif isinstance(data, dict) and isinstance(data.get("sources"), list):
-            entries = data["sources"]
-        elif isinstance(data, dict):
-            tier_by_group = {"official": "official", "leads": "lead", "lead": "lead", "blocked": "blocked"}
-            for group, tier in tier_by_group.items():
-                for e in data.get(group, []) or []:
-                    e = {"domain": e} if isinstance(e, str) else dict(e)
-                    e.setdefault("tier", tier)
-                    entries.append(e)
-        count = 0
-        for e in entries:
-            domain = e.get("domain") or domain_from_url(e.get("url"))
-            if not domain:
-                continue
-            tier = e.get("tier", "lead")
-            status = e.get("status", "blocked" if tier == "blocked" else "to_confirm")
-            extra = {k: v for k, v in e.items()
-                     if k not in {"domain", "url", "tier", "status", "name", "kind", "type", "state"}}
-            self.upsert_source(domain, tier=tier, status=status, name=e.get("name"),
-                               kind=e.get("kind") or e.get("type"), state=e.get("state"), config=extra)
-            count += 1
-        return count
+    def sources(self) -> List[Dict[str, Any]]:
+        """Sources in the shape signal_feed.classify() expects."""
+        out = []
+        for r in self.conn.execute("SELECT * FROM sources ORDER BY id"):
+            d = dict(r)
+            d["domains"] = json.loads(d["domains"])
+            out.append(d)
+        return out
 
-    def source_for_url(self, url: Optional[str]) -> Optional[sqlite3.Row]:
-        """Most specific source whose domain covers the URL's host."""
-        host = domain_from_url(url)
-        if not host:
-            return None
-        rows = self.conn.execute("SELECT * FROM sources").fetchall()
-        hits = [r for r in rows if _domain_matches(host, r["domain"])]
-        return max(hits, key=lambda r: len(r["domain"])) if hits else None
+    def source_for_url(self, url: Optional[str]) -> Optional[Dict[str, Any]]:
+        return SF.match_source(SF.host_of(url or ""), self.sources())
 
     def is_blocked_url(self, url: Optional[str]) -> bool:
-        host = domain_from_url(url)
-        if any(_domain_matches(host, b) for b in BLOCKED_DOMAINS):
+        host = SF.host_of(url or "")
+        if host and _hard_blocked(host):
             return True
         src = self.source_for_url(url)
-        return bool(src and (src["tier"] == "blocked" or src["status"] == "blocked"))
+        return bool(src and src["tier"] == "blocked")
 
     def is_official_active(self, url: Optional[str]) -> bool:
+        if not url or self.is_blocked_url(url):
+            return False
         src = self.source_for_url(url)
-        return bool(src and src["tier"] == "official" and src["status"] == "active"
-                    and not self.is_blocked_url(url))
+        return bool(src and src["tier"] == "official" and src["status"] == "active")
 
-    def classify(self, url: Optional[str]) -> str:
-        """Default gate by domain. signal_feed.py's verify can pass its own verdict."""
-        if self.is_blocked_url(url):
-            return GATE_BLOCKED
-        return GATE_VERIFIED if self.is_official_active(url) else GATE_UNVERIFIED
+    def gate(self, it: Dict[str, Any]) -> Tuple[str, str]:
+        """(gate_status, reason) for an aliased ledger item. The kit decides; the store only tightens."""
+        if self.is_blocked_url(it.get("source_url")):
+            return GATE_BLOCKED, "blocked source (unlicensed); drop this item"
+        ok, reason = SF.classify(it, self.sources())
+        if ok and self.is_official_active(it.get("source_url")):
+            return GATE_VERIFIED, reason
+        return GATE_UNVERIFIED, reason
 
     # ── runs and alerts ──────────────────────────────────────────────────
-    def start_run(self, kind: str, note: str = None) -> int:
+    def start_run(self, kind: str, source_id: str = None, note: str = None) -> int:
         with self.tx() as c:
-            return c.execute("INSERT INTO runs (kind, started_at, note) VALUES (?,?,?)",
-                             (kind, _now(), note)).lastrowid
+            return c.execute("INSERT INTO runs (kind, source_id, started_at, note) VALUES (?,?,?,?)",
+                             (kind, source_id, _now(), note)).lastrowid
 
     def finish_run(self, run_id: int, status: str = "ok", **counts: int) -> None:
-        sets = ", ".join("%s=?" % k for k in counts)
+        sets = "".join(", %s=?" % k for k in counts)
         with self.tx() as c:
-            c.execute("UPDATE runs SET finished_at=?, status=?%s WHERE id=?" % (", " + sets if sets else ""),
+            c.execute("UPDATE runs SET finished_at=?, status=?%s WHERE id=?" % sets,
                       (_now(), status, *counts.values(), run_id))
 
     def add_alert(self, kind: str, message: str, *, source: str = None, run_id: int = None) -> int:
@@ -351,8 +328,7 @@ class Store:
                 (run_id, kind, source, message, _now())).lastrowid
 
     def open_alerts(self) -> List[sqlite3.Row]:
-        return self.conn.execute(
-            "SELECT * FROM alerts WHERE resolved_at IS NULL ORDER BY id").fetchall()
+        return self.conn.execute("SELECT * FROM alerts WHERE resolved_at IS NULL ORDER BY id").fetchall()
 
     def resolve_alert(self, alert_id: int) -> None:
         with self.tx() as c:
@@ -361,124 +337,137 @@ class Store:
     # ── items ────────────────────────────────────────────────────────────
     def upsert_item(self, raw: Dict[str, Any], *, run_id: int = None,
                     gate: Optional[str] = None) -> str:
-        """Insert or merge one ledger item. Returns 'new', 'merged', or 'skipped'.
+        """Insert or merge one ledger row. Returns 'new' or 'merged'; raises ValueError on a row
+        that cannot be stored (no state, place or date).
 
-        Dedupe: same normalized (state, place, project) whose first sighting is
-        within DEDUPE_WINDOW_DAYS of this one merges into the existing row.
-        `gate` lets the kit's verify step pass its verdict; it can only
-        downgrade the domain-based verdict, never upgrade past it.
+        Dedupe: same normalized (state, place, project) with an earliest sighting within
+        DEDUPE_WINDOW_DAYS merges. With no project, the first six words of action stand in,
+        as in the kit's dedupe_key.
         """
-        item = apply_aliases(raw)
-        state = str(item.get("state") or "").strip().upper()
-        place = str(item.get("place") or "").strip()
-        project = str(item.get("project") or "").strip()
-        if not (state and place and project):
-            return "skipped"
-        day = parse_day(item.get("observed_at"))
-        url = item.get("source_url") or ""
+        it = SF.apply_aliases(raw)
+        state = str(it.get("state") or "").strip().upper()
+        place = str(it.get("place") or "").strip()
+        if not (state and place):
+            raise ValueError("missing state or place")
+        day = parse_day(it.get("date"))
+        project = str(it.get("project") or "").strip()
+        key = match_key(state, place, project or " ".join(str(it.get("action", "")).split()[:6]))
+        url = str(it.get("source_url") or "").strip()
 
-        domain_gate = self.classify(url)
-        if gate not in GATE_STATUSES:
-            gate = domain_gate
-        elif domain_gate == GATE_BLOCKED or (gate == GATE_VERIFIED and domain_gate != GATE_VERIFIED):
-            gate = domain_gate  # caller cannot launder a lead or blocked link
+        status, reason = self.gate(it)
+        if gate in GATE_STATUSES and GATE_STATUSES.index(gate) > GATE_STATUSES.index(status):
+            status = gate  # downgrade only: verified -> unverified -> blocked
 
-        official_url = url if gate == GATE_VERIFIED else None
-        lead_url = url if gate == GATE_UNVERIFIED else None
-        source_type = item.get("source_type") or ("official" if gate == GATE_VERIFIED else None)
-        key = match_key(state, place, project)
-        tags = item.get("trade_tags") or []
-        size = item.get("size_usd", item.get("value_usd"))
+        official_url = url if status == GATE_VERIFIED else None
+        lead_url = url if (status == GATE_UNVERIFIED and url) else None
+        source_type = "official" if status == GATE_VERIFIED else it.get("source_type")
+        tags = it.get("trade_tags") or []
+        size = _to_float(it.get("size_usd", it.get("value_usd")))
         now = _now()
 
-        lo, hi = (day - timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(), \
-                 (day + timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat()
         existing = self.conn.execute(
-            """SELECT * FROM items WHERE match_key=? AND observed_at BETWEEN ? AND ?
-               ORDER BY ABS(julianday(observed_at) - julianday(?)) LIMIT 1""",
-            (key, lo, hi, day.isoformat())).fetchone()
+            """SELECT * FROM items WHERE match_key=? AND date BETWEEN ? AND ?
+               ORDER BY ABS(julianday(date) - julianday(?)) LIMIT 1""",
+            (key, (day - timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(),
+             (day + timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(), day.isoformat())).fetchone()
 
         with self.tx() as c:
             if existing is None:
                 c.execute(
-                    """INSERT INTO items (match_key, observed_at, last_seen_at, state, place, project,
-                         action, source_type, gate_status, official_url, lead_url, source_urls,
-                         trade_tags, size_usd, raw_json, first_run_id, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (key, day.isoformat(), day.isoformat(), state, place, project,
-                     item.get("action"), source_type, gate, official_url, lead_url,
-                     json.dumps([url] if url else []), json.dumps(sorted(set(tags))),
-                     _to_float(size), json.dumps(raw, sort_keys=True), run_id, now, now))
+                    """INSERT INTO items (match_key, date, last_seen_at, state, place, county, project,
+                         action, why, notes, source_name, source_type, gate_status, gate_reason,
+                         official_url, lead_url, source_urls, trade_tags, size_usd, raw_json,
+                         first_run_id, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (key, day.isoformat(), day.isoformat(), state, place, it.get("county"),
+                     project or None, it.get("action"), it.get("why"), it.get("notes"),
+                     it.get("source_name"), source_type, status, reason, official_url, lead_url,
+                     json.dumps([url] if url else []), json.dumps(sorted(set(tags))), size,
+                     json.dumps(raw, sort_keys=True, ensure_ascii=False), run_id, now, now))
                 return "new"
 
+            old = existing["gate_status"]
+            if old == GATE_BLOCKED or status == GATE_BLOCKED:
+                merged = GATE_BLOCKED
+            elif GATE_VERIFIED in (old, status):
+                merged = GATE_VERIFIED
+            else:
+                merged = GATE_UNVERIFIED
             urls = json.loads(existing["source_urls"])
             if url and url not in urls:
                 urls.append(url)
-            merged_gate = existing["gate_status"]
-            if merged_gate != GATE_BLOCKED and gate == GATE_VERIFIED:
-                merged_gate = GATE_VERIFIED
-            merged_tags = sorted(set(json.loads(existing["trade_tags"])) | set(tags))
             c.execute(
-                """UPDATE items SET observed_at=MIN(observed_at, ?), last_seen_at=MAX(last_seen_at, ?),
-                     action=COALESCE(?, action), gate_status=?,
-                     official_url=COALESCE(official_url, ?), lead_url=COALESCE(lead_url, ?),
+                """UPDATE items SET date=MIN(date, ?), last_seen_at=MAX(last_seen_at, ?), gate_status=?,
+                     gate_reason=CASE WHEN ? THEN ? ELSE gate_reason END,
+                     official_url=CASE WHEN ?='verified' THEN COALESCE(official_url, ?) ELSE NULL END,
+                     lead_url=COALESCE(lead_url, ?),
                      source_type=CASE WHEN ?='verified' THEN 'official' ELSE COALESCE(source_type, ?) END,
-                     source_urls=?, trade_tags=?, size_usd=COALESCE(?, size_usd), updated_at=?
+                     county=COALESCE(county, ?), project=COALESCE(project, ?), why=COALESCE(why, ?),
+                     notes=COALESCE(notes, ?), source_urls=?, trade_tags=?,
+                     size_usd=COALESCE(?, size_usd), updated_at=?
                    WHERE id=?""",
-                (day.isoformat(), day.isoformat(), item.get("action"), merged_gate,
-                 official_url, lead_url, merged_gate, source_type, json.dumps(urls),
-                 json.dumps(merged_tags), _to_float(size), now, existing["id"]))
+                (day.isoformat(), day.isoformat(), merged, merged != old, reason, merged, official_url, lead_url, merged, it.get("source_type"),
+                 it.get("county"), project or None, it.get("why"), it.get("notes"),
+                 json.dumps(urls), json.dumps(sorted(set(json.loads(existing["trade_tags"])) | set(tags))),
+                 size, now, existing["id"]))
             return "merged"
 
     def confirm_item(self, item_id: int, official_url: str) -> bool:
-        """Attach an approved official URL (stage c). Refuses non-official domains."""
+        """Attach a human-approved official URL (stage c). Refuses anything not official+active."""
         if not self.is_official_active(official_url):
             return False
+        row = self.conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if row is None or row["gate_status"] == GATE_BLOCKED:
+            return False
+        urls = json.loads(row["source_urls"])
+        if official_url not in urls:
+            urls.append(official_url)
+        src = self.source_for_url(official_url)
         with self.tx() as c:
-            row = c.execute("SELECT source_urls, gate_status FROM items WHERE id=?", (item_id,)).fetchone()
-            if row is None or row["gate_status"] == GATE_BLOCKED:
-                return False
-            urls = json.loads(row["source_urls"])
-            if official_url not in urls:
-                urls.append(official_url)
-            c.execute("""UPDATE items SET gate_status='verified', source_type='official',
-                           official_url=?, source_urls=?, updated_at=? WHERE id=?""",
-                      (official_url, json.dumps(urls), _now(), item_id))
+            c.execute("""UPDATE items SET gate_status='verified', source_type='official', official_url=?,
+                           gate_reason=?, source_urls=?, updated_at=? WHERE id=?""",
+                      (official_url, "official: %s (confirmed by hand)" % src["name"],
+                       json.dumps(urls), _now(), item_id))
         return True
 
-    def import_ledger(self, path: Any, *, classify: Callable[[dict], Optional[str]] = None) -> Dict[str, int]:
+    def import_ledger(self, path: Any) -> Dict[str, int]:
         run_id = self.start_run("import", note=str(path))
-        counts = {"new": 0, "merged": 0, "skipped": 0, "bad": 0}
+        counts = {"new": 0, "merged": 0, "bad": 0}
         try:
             for raw in read_jsonl(path):
                 try:
-                    counts[self.upsert_item(raw, run_id=run_id, gate=classify(raw) if classify else None)] += 1
+                    result = self.upsert_item(raw, run_id=run_id)
                 except ValueError as exc:
                     counts["bad"] += 1
-                    self.add_alert("schema_change", "bad ledger row: %s" % exc, source=str(path), run_id=run_id)
+                    self.add_alert("schema_change", "ledger row not stored (%s): %s"
+                                   % (exc, json.dumps(raw)[:200]), source=str(path), run_id=run_id)
+                    continue
+                counts[result] += 1
+                it = SF.apply_aliases(raw)
+                if str(it.get("status", "")).lower() == "confirmed" and self.gate(it)[0] != GATE_VERIFIED:
+                    self.add_alert("marked_confirmed_unverified",
+                                   "item marked confirmed but not verified: %s / %s (%s)"
+                                   % (it.get("place"), it.get("project") or str(it.get("action", ""))[:60],
+                                      self.gate(it)[1]), source=str(path), run_id=run_id)
         except Exception as exc:
             self.finish_run(run_id, "error")
             self.add_alert("collector_error", "import failed: %s" % exc, source=str(path), run_id=run_id)
             raise
-        total = sum(counts.values())
-        self.finish_run(run_id, "ok", items_in=total, items_new=counts["new"], items_merged=counts["merged"])
+        self.finish_run(run_id, "ok", items_in=sum(counts.values()),
+                        items_new=counts["new"], items_merged=counts["merged"])
         return counts
 
     def items(self, gate_status: str = None) -> List[sqlite3.Row]:
         if gate_status:
-            return self.conn.execute("SELECT * FROM items WHERE gate_status=? ORDER BY observed_at, id",
+            return self.conn.execute("SELECT * FROM items WHERE gate_status=? ORDER BY date, id",
                                      (gate_status,)).fetchall()
-        return self.conn.execute("SELECT * FROM items ORDER BY observed_at, id").fetchall()
+        return self.conn.execute("SELECT * FROM items ORDER BY date, id").fetchall()
 
     def held_items(self) -> List[sqlite3.Row]:
         return self.items(GATE_UNVERIFIED)
 
     def paid_eligible_items(self, *, states: Iterable[str] = None, since: Any = None) -> List[sqlite3.Row]:
-        """The only query an issue builder may use.
-
-        Re-checks the official URL against the live sources table, so a source
-        that is paused or blocked after an item was verified drops it.
-        """
+        """The only query an issue builder may use for subscriber copy."""
         sql = "SELECT * FROM items WHERE gate_status='verified' AND official_url IS NOT NULL"
         args: List[Any] = []
         if states:
@@ -488,7 +477,7 @@ class Store:
         if since:
             sql += " AND last_seen_at >= ?"
             args.append(parse_day(since).isoformat())
-        rows = self.conn.execute(sql + " ORDER BY state, observed_at, id", args).fetchall()
+        rows = self.conn.execute(sql + " ORDER BY state, date, id", args).fetchall()
         return [r for r in rows if self.is_official_active(r["official_url"])]
 
     def export_jsonl(self, path: Any) -> int:
@@ -498,35 +487,26 @@ class Store:
                 rec = dict(r)
                 for k in ("source_urls", "trade_tags", "raw_json"):
                     rec[k] = json.loads(rec[k])
-                fh.write(json.dumps(rec, sort_keys=True) + "\n")
+                fh.write(json.dumps(rec, sort_keys=True, ensure_ascii=False) + "\n")
                 n += 1
         return n
 
     def stats(self) -> Dict[str, Any]:
-        q = lambda sql: self.conn.execute(sql).fetchall()
+        q = lambda sql: self.conn.execute(sql).fetchall()  # noqa: E731
         return {
             "items_by_gate": {r[0]: r[1] for r in q("SELECT gate_status, COUNT(*) FROM items GROUP BY 1")},
             "sources_by_tier_status": {"%s/%s" % (r[0], r[1]): r[2]
-                                       for r in q("SELECT tier, status, COUNT(*) FROM sources GROUP BY 1,2")},
+                                       for r in q("SELECT tier, status, COUNT(*) FROM sources GROUP BY 1, 2")},
             "open_alerts": len(self.open_alerts()),
             "runs": q("SELECT COUNT(*) FROM runs")[0][0],
         }
-
-
-def _to_float(v: Any) -> Optional[float]:
-    if v in (None, ""):
-        return None
-    try:
-        return float(str(v).replace(",", "").replace("$", ""))
-    except ValueError:
-        return None
 
 
 def read_jsonl(path: Any) -> Iterator[dict]:
     with open(path, encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line:
                 continue
             try:
                 yield json.loads(line)
@@ -550,11 +530,10 @@ def main(argv: List[str] = None) -> int:
     store = Store(a.db)
     try:
         if a.cmd == "import":
-            if Path(a.allowlist).exists():
-                print("sources synced: %d" % store.load_allowlist(a.allowlist))
-            else:
-                print("warning: no allowlist at %s; every item will be held" % a.allowlist)
+            print("sources synced: %d" % store.load_allowlist(a.allowlist))
             print(json.dumps(store.import_ledger(a.ledger)))
+            for al in store.open_alerts():
+                print("ALERT [%s] %s" % (al["kind"], al["message"]))
         elif a.cmd == "export":
             print("exported %d items" % store.export_jsonl(a.out))
         elif a.cmd == "stats":

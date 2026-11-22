@@ -35,3 +35,54 @@ source_type when you know it).
 After the PM watch on Fridays: run `verify`, then `draft`, then email
 `out/issue-review.txt` to yourself. You press Send on `issue-subscriber.txt`
 until the send path is trusted. If `out/alerts.txt` is not empty, stop.
+
+---
+
+# Production build (stages a to f)
+
+| Stage | Scope | Status |
+|---|---|---|
+| a | SQLite store + tests | built |
+| b | Collectors: SAM.gov, Austin/San Antonio open data | not started |
+| c | Confirmation helper + admin queue | not started |
+| d | Issue builder tiers | not started |
+| e | Web app + Stripe test mode | not started |
+| f | Delivery (REVIEW mode), alerts, schedule | not started |
+
+## Store (stage a): `scripts/store.py`
+
+SQLite (`signal_feed.db`, override with `SIGNAL_FEED_DB`) with tables items,
+sources, runs, alerts, subscribers, issues, sends. Standard library only.
+
+    python scripts/store.py import /workspace/commercial-growth/04-ledger/events.jsonl
+    python scripts/store.py stats
+    python scripts/store.py export out/audit.jsonl     # JSONL audit copy
+
+`import` re-syncs `sources` from `config/allowlist.json` on every run, then
+loads the ledger. It reads the growth-watch field names directly
+(`observed_at`, `metro_or_submarket`, `name`) through `FIELD_ALIASES`.
+
+**One gate.** `signal_feed.classify()` decides verified or held. The store
+only tightens it:
+- Dodge, ConstructConnect, BuildingConnected and PlanHub are blocked in code;
+  an allowlist edit cannot unblock them, and a blocked item stays blocked.
+- `paid_eligible_items()` is the only query subscriber copy may use. It
+  re-checks each official link against the live allowlist, so setting a
+  source back to `to_confirm` pulls its items from the next issue.
+
+**Dedupe.** Normalized (state, place, project); a sighting within 14 days of
+the first one merges into it. With no project, the first six words of the
+action stand in. When an official link arrives for a held item, the item is
+verified and the lead link is kept as the secondary link. This replaces
+`out/seen_keys.txt` for the store path.
+
+**Turning a source active.** In `config/allowlist.json`, fill in `domains`,
+`terms_checked` (the date you read the terms and robots.txt) and set
+`"status": "active"`. The next `import` picks it up.
+
+## Tests
+
+    python -m unittest discover -s tests -v
+
+CI runs this on every push (`.github/workflows/signal-feed.yml`, Python 3.9
+and 3.12).
