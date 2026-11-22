@@ -78,13 +78,31 @@ def host_of(url):
     return h.lower().removeprefix("www.")
 
 
+def _strictness(src):
+    """Higher is stricter. Breaks ties between sources that list the same domain."""
+    if src.get("tier") == "blocked":
+        return 3
+    if src.get("tier") != "official":
+        return 2
+    return 0 if src.get("status") == "active" else 1
+
+
 def match_source(host, sources):
+    """The most specific allowlist entry for host, never just the first one listed.
+
+    data.austintexas.gov must match the permits source, not the council source that
+    lists austintexas.gov, whatever order the file is in. On an exact tie the stricter
+    source wins, so a duplicate domain can only hold an item, never pass it.
+    """
+    best, best_rank = None, None
     for s in sources:
         for d in s.get("domains", []):
             d = d.lower()
             if host == d or host.endswith("." + d):
-                return s
-    return None
+                rank = (len(d), _strictness(s))
+                if best_rank is None or rank > best_rank:
+                    best, best_rank = s, rank
+    return best
 
 
 def slug(s):
