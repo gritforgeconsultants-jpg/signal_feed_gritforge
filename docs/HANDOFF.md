@@ -10,7 +10,7 @@ A paid weekly email of public construction signals (Texas and Colorado first) fo
 
 - Repo: `gritforgeconsultants-jpg/signal_feed_gritforge`
 - Work branch: `claude/wizardly-thompson-932ype` (not merged to `main` yet; `main` has only the original README)
-- Tests: `python -m unittest discover -s tests -v` (stdlib only, Python 3.9+). 129 passing (checked on 3.9, 3.12 and 3.13). CI: `.github/workflows/tests.yml`, 3.9 and 3.12, every push.
+- Tests: `python -m unittest discover -s tests -v` (stdlib only, Python 3.9+). 136 passing (checked on 3.9, 3.12 and 3.13). CI: `.github/workflows/tests.yml`, 3.9 and 3.12, every push.
 
 ## Build order (stop after each stage for Arron's review)
 
@@ -57,13 +57,17 @@ Only sources with `tier=official` AND `status=active` in `config/allowlist.json`
 5. (stage b) San Antonio is CKAN, not Socrata; the Socrata URL in the Clark Iron permits module is why it 404'd there. Resource id and columns still unknown.
 6. (stage b) The Clark Iron SAM module sends NAICS as `naicsCode=` with a comma list; the documented parameter is `ncode`, one code. Worth checking on that side; not touched from here.
 8. (ledger) `notes` carries routine-internal text ("[tier=mid; corridor=...]", "NEW to ledger (missed Nov 3)"). The kit's draft prints notes in subscriber copy; stage d must not.
-9. (ledger) `event_id` is a stable id and `supersedes` links revisions; dedupe could key on them instead of normalized text. Not done; decide before stage d.
+9. (ledger) Done: dedupe keys on `event_id` first; `supersedes` replaces the named item (superseded items leave held and paid; a news-sourced revision of a verified item drops it to held until confirmed, deliberately).
+11. (ledger) The routine is national (41 states) but official sources are TX/CO + federal. Footprint decision pending: recommendation is TX/CO tiers at launch, National Desk later.
+12. (ledger) Recommendation: run stage c before d/e. Confirming sources reaches ~2.8 items/week from the ledger; stage c is what turns the 142 news-sourced TX/CO leads into paid items.
+13. Texas Construction Hub's domain still unknown (seen as "texasconstructionhub" in the dry run); add it to `tx-construction-hub`.
 10. (ledger) `value_usd` can be an authorization cap (Aspen: "up to $100M" in bonds), not a contract value. Label as projection per the verification rule.
 7. (stage b) Alerts are not deduplicated: a source failing every run adds an alert each run. Stage f should collapse repeats.
 
 ## Open items (ask Arron if not yet answered)
 
 1. **Real ledger** lives on the Grok Bot machine at `/workspace/commercial-growth/04-ledger/events.jsonl`, owned by the growth-watch routine (read-only; never move, edit or commit it). Code reads env `LEDGER_PATH`; tests use `tests/fixtures/ledger/events-sample.jsonl` (one copied line). Fields: event_id, observed_at, first_seen_at, region, metro_or_submarket, state, name, signal_type, stage, pipeline_stage, sector, steel_relevance, confidence, value_usd, source_name, source_url, notes, precursor_of, supersedes; no source_type, no action. Stage a dry run still not done: it has to run on that machine (or the file shared into the session).
+1b. **Dry run done (2026-11-22):** 407 rows, 0 bad, 0 alerts; 0 verified, 406 held, 1 blocked. Held: 33 allowlisted-to_confirm, 358 not on allowlist, 15 lead/AI/context. TX+CO = 185 rows; 41 states in all; 2026-08-06 to 2026-11-20 (~27 rows/week, ~12 TX/CO). 407 unique event_ids; 17 rows set supersedes. Blocked row is from construction.com (Dodge). After it: allowlist gained 9 official/to_confirm TX/CO entries + nist.gov and 4 lead groups; ranked confirm queue in `docs/confirm-worksheet.md` (42 of 184 TX/CO held items reachable by confirming sources; the rest need stage c). Schema v3 dedupes on event_id and applies supersedes.
 1a. Fixed: the ledger has no action field, so every real row was held as "missing action" even on an official domain. `name` now fills action when action is empty.
 2. **`tools/sam_pull.py`** was not provided; the SAM collector was built new from the query pattern in `clean_web_engine` (copied, not imported). If the script exists, compare its query before retiring it.
 3. Stage b review sign-off.
