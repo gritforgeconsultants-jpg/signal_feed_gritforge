@@ -1,0 +1,13 @@
+# Secrets: env vars only, never committed
+.env
+.env.*
+!.env.example
+
+# Working DB and run output (regenerated)
+signal_feed.db*
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

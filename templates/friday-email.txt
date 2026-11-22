@@ -1,0 +1,11 @@
+Subject: GritForge Signal Feed: Texas and Colorado, week of {{WEEK_OF}}
+
+Good afternoon, here is this week's list of new commercial work in Texas and Colorado. Each item has a source link; if I could not tie it to an official record I left it off or marked it unverified. Let me know if you have any questions.
+
+{{ITEMS}}
+
+Regards,
+Arron Fain
+GritForge Consultants
+
+This is a reading of public information. It is not a bid invitation, and it can be wrong. Confirm the official source before you act.
