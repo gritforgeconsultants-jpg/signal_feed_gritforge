@@ -116,5 +116,77 @@ class TestImport(unittest.TestCase):
         self.assertIn("LEDGER_PATH", p.stderr)
 
 
+class TestEventIdAndSupersedes(unittest.TestCase):
+    """The routine writes each event once (407 lines, 407 ids) and revises with supersedes."""
+
+    def setUp(self):
+        self.st = S.Store(":memory:")
+        self.st.load_allowlist(ALLOWLIST)
+
+    def tearDown(self):
+        self.st.close()
+
+    def row(self, eid, **kw):
+        return dict(sample_row(), event_id=eid, **kw)
+
+    def test_same_event_id_merges_despite_rewording(self):
+        self.assertEqual(self.st.upsert_item(self.row("e1")), "new")
+        self.assertEqual(self.st.upsert_item(self.row("e1", name="Aspen 2A water bonds pass",
+                                                      observed_at="2026-12-30")), "merged")
+        self.assertEqual(len(self.st.items()), 1)
+
+    def test_different_event_ids_never_text_merge(self):
+        self.st.upsert_item(self.row("e1"))
+        self.assertEqual(self.st.upsert_item(self.row("e2")), "new")  # identical text, same day
+        self.assertEqual(len(self.st.items()), 2)
+
+    def test_rows_without_event_id_still_text_merge(self):
+        r = {k: v for k, v in sample_row().items() if k != "event_id"}
+        self.st.upsert_item(r)
+        self.assertEqual(self.st.upsert_item(r), "merged")
+
+    def test_revision_replaces_in_either_order(self):
+        for first, second in ((self.row("old"), self.row("new", supersedes="old", value_usd=120000000)),
+                              (self.row("new", supersedes="old", value_usd=120000000), self.row("old"))):
+            st = S.Store(":memory:")
+            try:
+                st.load_allowlist(ALLOWLIST)
+                st.upsert_item(first)
+                st.upsert_item(second)
+                held = st.held_items()
+                self.assertEqual([h["event_id"] for h in held], ["new"])
+                self.assertEqual(held[0]["size_usd"], 120000000.0)
+                gone = st.superseded_items()
+                self.assertEqual([g["event_id"] for g in gone], ["old"])
+                self.assertEqual(gone[0]["superseded_by"], held[0]["id"])
+                self.assertEqual(st.stats()["superseded"], 1)
+            finally:
+                st.close()
+
+    def test_verified_item_superseded_by_news_revision_leaves_paid_copy(self):
+        # Deliberate: the replacement is gated on its own source. An old official link never
+        # carries a revised, news-sourced figure into paid copy.
+        self.st.upsert_item(self.row("old", source_url="https://sam.gov/opp/TEST/view"))
+        self.assertEqual(len(self.st.paid_eligible_items()), 1)
+        self.st.upsert_item(self.row("new", supersedes="old"))
+        self.assertEqual(self.st.paid_eligible_items(), [])
+        old = self.st.superseded_items()[0]
+        self.assertFalse(self.st.confirm_item(old["id"], "https://sam.gov/opp/TEST/view"))
+
+    def test_chain_of_revisions(self):
+        self.st.upsert_item(self.row("a"))
+        self.st.upsert_item(self.row("b", supersedes="a"))
+        self.st.upsert_item(self.row("c", supersedes="b"))
+        self.assertEqual([h["event_id"] for h in self.st.held_items()], ["c"])
+        self.assertEqual(len(self.st.superseded_items()), 2)
+
+    def test_reimporting_the_ledger_adds_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Path(d) / "events.jsonl"
+            ledger.write_text("\n".join(json.dumps(self.row(e, name="Event %s" % e)) for e in "abc"))
+            self.assertEqual(self.st.import_ledger(ledger), {"new": 3, "merged": 0, "bad": 0})
+            self.assertEqual(self.st.import_ledger(ledger), {"new": 0, "merged": 3, "bad": 0})
+
+
 if __name__ == "__main__":
     unittest.main()

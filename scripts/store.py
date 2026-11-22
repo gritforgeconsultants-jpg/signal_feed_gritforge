@@ -42,7 +42,7 @@ DEFAULT_ALLOWLIST = ROOT / "config" / "allowlist.json"
 # Signal Feed only ever reads it (opened "r"); never move, edit or copy it into the repo.
 LEDGER_ENV = "LEDGER_PATH"
 
-SCHEMA_VERSION = 2  # v2: documents table (agenda/minutes links from stage b)
+SCHEMA_VERSION = 3  # v2: documents table. v3: items.event_id / supersedes / superseded_by
 DEDUPE_WINDOW_DAYS = 14
 
 HARD_BLOCKED_DOMAINS = ("construction.com", "constructconnect.com",
@@ -115,7 +115,10 @@ CREATE TABLE IF NOT EXISTS items (
     raw_json TEXT NOT NULL,                    -- first ledger row as received
     first_run_id INTEGER REFERENCES runs(id),
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    event_id TEXT,                             -- v3: growth-watch ledger's stable id
+    supersedes TEXT,                           -- v3: event_id this row revises
+    superseded_by INTEGER REFERENCES items(id) -- v3: set when a later revision replaces this item
 );
 CREATE INDEX IF NOT EXISTS ix_items_match ON items(match_key, date);
 CREATE INDEX IF NOT EXISTS ix_items_gate ON items(gate_status, state);
@@ -189,6 +192,8 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS ix_documents_src ON documents(source_id, meeting_date);
 """
 
+_ITEM_V3_COLUMNS = (("event_id", "TEXT"), ("supersedes", "TEXT"),
+                    ("superseded_by", "INTEGER REFERENCES items(id)"))
 _PUNCT = re.compile(r"[^a-z0-9\s]+")
 _WS = re.compile(r"\s+")
 _SOURCE_COLS = ("id", "name", "region", "tier", "status", "domains", "method",
@@ -250,6 +255,11 @@ class Store:
         if version > SCHEMA_VERSION:
             raise RuntimeError("db schema v%d is newer than code v%d" % (version, SCHEMA_VERSION))
         self.conn.executescript(SCHEMA)
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+        for col, typ in _ITEM_V3_COLUMNS:  # CREATE TABLE IF NOT EXISTS does not add columns
+            if col not in have:
+                self.conn.execute("ALTER TABLE items ADD COLUMN %s %s" % (col, typ))
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_items_event ON items(event_id)")
         self.conn.execute("PRAGMA user_version = %d" % SCHEMA_VERSION)
         self.conn.commit()
 
@@ -404,9 +414,14 @@ class Store:
         """Insert or merge one ledger row. Returns 'new' or 'merged'; raises ValueError on a row
         that cannot be stored (no state, place or date).
 
-        Dedupe: same normalized (state, place, project) with an earliest sighting within
-        DEDUPE_WINDOW_DAYS merges. With no project, the first six words of action stand in,
-        as in the kit's dedupe_key.
+        Dedupe, in order:
+          1. Same event_id (the growth-watch ledger's stable id) merges, whatever the wording.
+          2. Same normalized (state, place, project) with an earliest sighting within
+             DEDUPE_WINDOW_DAYS merges. With no project, the first six words of action stand in,
+             as in the kit's dedupe_key. Two rows with different event_ids never merge this way:
+             the routine has said they are different events.
+        A row whose supersedes names another item's event_id replaces that item (see
+        _apply_supersedes); it does not merge into it.
         """
         it = SF.apply_aliases(raw)
         state = str(it.get("state") or "").strip().upper()
@@ -427,13 +442,22 @@ class Store:
         source_type = "official" if status == GATE_VERIFIED else it.get("source_type")
         tags = it.get("trade_tags") or []
         size = _to_float(it.get("size_usd", it.get("value_usd")))
+        event_id = str(it.get("event_id") or "").strip() or None
+        supersedes = str(it.get("supersedes") or "").strip() or None
         now = _now()
 
-        existing = self.conn.execute(
-            """SELECT * FROM items WHERE match_key=? AND date BETWEEN ? AND ?
-               ORDER BY ABS(julianday(date) - julianday(?)) LIMIT 1""",
-            (key, (day - timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(),
-             (day + timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(), day.isoformat())).fetchone()
+        existing = None
+        if event_id:
+            existing = self.conn.execute("SELECT * FROM items WHERE event_id=? ORDER BY id LIMIT 1",
+                                         (event_id,)).fetchone()
+        if existing is None:
+            existing = self.conn.execute(
+                """SELECT * FROM items WHERE match_key=? AND date BETWEEN ? AND ?
+                     AND (event_id IS NULL OR ? IS NULL OR event_id = ?)
+                   ORDER BY ABS(julianday(date) - julianday(?)) LIMIT 1""",
+                (key, (day - timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(),
+                 (day + timedelta(days=DEDUPE_WINDOW_DAYS)).isoformat(), event_id, event_id,
+                 day.isoformat())).fetchone()
 
         with self.tx() as c:
             if existing is None:
@@ -441,48 +465,75 @@ class Store:
                     """INSERT INTO items (match_key, date, last_seen_at, state, place, county, project,
                          action, why, notes, source_name, source_type, gate_status, gate_reason,
                          official_url, lead_url, source_urls, trade_tags, size_usd, raw_json,
-                         first_run_id, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         first_run_id, created_at, updated_at, event_id, supersedes)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (key, day.isoformat(), day.isoformat(), state, place, it.get("county"),
                      project or None, it.get("action"), it.get("why"), it.get("notes"),
                      it.get("source_name"), source_type, status, reason, official_url, lead_url,
                      json.dumps([url] if url else []), json.dumps(sorted(set(tags))), size,
-                     json.dumps(raw, sort_keys=True, ensure_ascii=False), run_id, now, now))
-                return "new"
-
-            old = existing["gate_status"]
-            if old == GATE_BLOCKED or status == GATE_BLOCKED:
-                merged = GATE_BLOCKED
-            elif GATE_VERIFIED in (old, status):
-                merged = GATE_VERIFIED
+                     json.dumps(raw, sort_keys=True, ensure_ascii=False), run_id, now, now,
+                     event_id, supersedes))
+                item_id, result = cur_id(c), "new"
             else:
-                merged = GATE_UNVERIFIED
-            urls = json.loads(existing["source_urls"])
-            if url and url not in urls:
-                urls.append(url)
-            c.execute(
-                """UPDATE items SET date=MIN(date, ?), last_seen_at=MAX(last_seen_at, ?), gate_status=?,
-                     gate_reason=CASE WHEN ? THEN ? ELSE gate_reason END,
-                     official_url=CASE WHEN ?='verified' THEN COALESCE(official_url, ?) ELSE NULL END,
-                     lead_url=COALESCE(lead_url, ?),
-                     source_type=CASE WHEN ?='verified' THEN 'official' ELSE COALESCE(source_type, ?) END,
-                     county=COALESCE(county, ?), project=COALESCE(project, ?), why=COALESCE(why, ?),
-                     notes=COALESCE(notes, ?), source_urls=?, trade_tags=?,
-                     size_usd=COALESCE(?, size_usd), updated_at=?
-                   WHERE id=?""",
-                (day.isoformat(), day.isoformat(), merged, merged != old, reason, merged, official_url, lead_url, merged, it.get("source_type"),
-                 it.get("county"), project or None, it.get("why"), it.get("notes"),
-                 json.dumps(urls), json.dumps(sorted(set(json.loads(existing["trade_tags"])) | set(tags))),
-                 size, now, existing["id"]))
-            return "merged"
+                item_id, result = existing["id"], "merged"
+                self._merge(c, existing, day, status, reason, official_url, lead_url, url, it,
+                            project, tags, size, now, event_id, supersedes)
+        self._apply_supersedes(item_id)
+        return result
+
+    def _merge(self, c: sqlite3.Connection, existing: sqlite3.Row, day: date, status: str,
+               reason: str, official_url: Optional[str], lead_url: Optional[str], url: str,
+               it: Dict[str, Any], project: str, tags: List[str], size: Optional[float], now: str,
+               event_id: Optional[str], supersedes: Optional[str]) -> None:
+        old = existing["gate_status"]
+        if old == GATE_BLOCKED or status == GATE_BLOCKED:
+            merged = GATE_BLOCKED
+        elif GATE_VERIFIED in (old, status):
+            merged = GATE_VERIFIED
+        else:
+            merged = GATE_UNVERIFIED
+        urls = json.loads(existing["source_urls"])
+        if url and url not in urls:
+            urls.append(url)
+        c.execute(
+            """UPDATE items SET date=MIN(date, ?), last_seen_at=MAX(last_seen_at, ?), gate_status=?,
+                 gate_reason=CASE WHEN ? THEN ? ELSE gate_reason END,
+                 official_url=CASE WHEN ?='verified' THEN COALESCE(official_url, ?) ELSE NULL END,
+                 lead_url=COALESCE(lead_url, ?),
+                 source_type=CASE WHEN ?='verified' THEN 'official' ELSE COALESCE(source_type, ?) END,
+                 county=COALESCE(county, ?), project=COALESCE(project, ?), why=COALESCE(why, ?),
+                 notes=COALESCE(notes, ?), source_urls=?, trade_tags=?,
+                 size_usd=COALESCE(?, size_usd), updated_at=?
+               WHERE id=?""",
+            (day.isoformat(), day.isoformat(), merged, merged != old, reason, merged, official_url, lead_url, merged, it.get("source_type"),
+             it.get("county"), project or None, it.get("why"), it.get("notes"),
+             json.dumps(urls), json.dumps(sorted(set(json.loads(existing["trade_tags"])) | set(tags))),
+             size, now, existing["id"]))
+        c.execute("UPDATE items SET event_id=COALESCE(event_id, ?), supersedes=COALESCE(supersedes, ?) "
+                  "WHERE id=?", (event_id, supersedes, existing["id"]))
+
+    def _apply_supersedes(self, item_id: int) -> None:
+        """Link revisions in either arrival order. A superseded item leaves the held queue and
+        paid copy; its replacement is gated on its own source, never on the old item's."""
+        row = self.conn.execute("SELECT event_id, supersedes FROM items WHERE id=?", (item_id,)).fetchone()
+        with self.tx() as c:
+            if row["supersedes"]:
+                c.execute("""UPDATE items SET superseded_by=?, updated_at=? WHERE event_id=? AND id != ?
+                               AND superseded_by IS NULL""", (item_id, _now(), row["supersedes"], item_id))
+            if row["event_id"]:
+                newer = c.execute("SELECT id FROM items WHERE supersedes=? AND id != ? ORDER BY id DESC LIMIT 1",
+                                  (row["event_id"], item_id)).fetchone()
+                if newer:
+                    c.execute("UPDATE items SET superseded_by=? WHERE id=? AND superseded_by IS NULL",
+                              (newer[0], item_id))
 
     def confirm_item(self, item_id: int, official_url: str) -> bool:
         """Attach a human-approved official URL (stage c). Refuses anything not official+active."""
         if not self.is_official_active(official_url):
             return False
         row = self.conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
-        if row is None or row["gate_status"] == GATE_BLOCKED:
-            return False
+        if row is None or row["gate_status"] == GATE_BLOCKED or row["superseded_by"] is not None:
+            return False  # a superseded item is out of date; confirm its replacement instead
         urls = json.loads(row["source_urls"])
         if official_url not in urls:
             urls.append(official_url)
@@ -528,11 +579,17 @@ class Store:
         return self.conn.execute("SELECT * FROM items ORDER BY date, id").fetchall()
 
     def held_items(self) -> List[sqlite3.Row]:
-        return self.items(GATE_UNVERIFIED)
+        """The Unverified queue. Superseded items are left out; their replacements are in it."""
+        return self.conn.execute("""SELECT * FROM items WHERE gate_status='unverified'
+                                      AND superseded_by IS NULL ORDER BY date, id""").fetchall()
+
+    def superseded_items(self) -> List[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM items WHERE superseded_by IS NOT NULL ORDER BY id").fetchall()
 
     def paid_eligible_items(self, *, states: Iterable[str] = None, since: Any = None) -> List[sqlite3.Row]:
         """The only query an issue builder may use for subscriber copy."""
-        sql = "SELECT * FROM items WHERE gate_status='verified' AND official_url IS NOT NULL"
+        sql = ("SELECT * FROM items WHERE gate_status='verified' AND official_url IS NOT NULL"
+               " AND superseded_by IS NULL")
         args: List[Any] = []
         if states:
             states = [s.upper() for s in states]
@@ -562,9 +619,14 @@ class Store:
             "sources_by_tier_status": {"%s/%s" % (r[0], r[1]): r[2]
                                        for r in q("SELECT tier, status, COUNT(*) FROM sources GROUP BY 1, 2")},
             "open_alerts": len(self.open_alerts()),
+            "superseded": q("SELECT COUNT(*) FROM items WHERE superseded_by IS NOT NULL")[0][0],
             "documents": q("SELECT COUNT(*) FROM documents")[0][0],
             "runs": q("SELECT COUNT(*) FROM runs")[0][0],
         }
+
+
+def cur_id(c: sqlite3.Connection) -> int:
+    return c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
 def read_jsonl(path: Any) -> Iterator[dict]:

@@ -98,13 +98,21 @@ class TestSchemaV2(StoreBase):
     def test_v1_database_upgrades_in_place(self):
         path = self.dir / "v1.db"
         conn = sqlite3.connect(path)
-        conn.executescript(S.SCHEMA.split("CREATE TABLE IF NOT EXISTS documents")[0])
+        v1 = S.SCHEMA.split("CREATE TABLE IF NOT EXISTS documents")[0]
+        v1 = "\n".join(l for l in v1.split("\n") if "-- v3" not in l).replace(
+            "updated_at TEXT NOT NULL,\n);", "updated_at TEXT NOT NULL\n);")
+        conn.executescript(v1)
         conn.execute("PRAGMA user_version = 1")
+        conn.execute("INSERT INTO items (match_key, date, last_seen_at, state, place, raw_json, created_at, "
+                     "updated_at) VALUES ('k','2026-01-01','2026-01-01','TX','a','{}','x','x')")
         conn.commit()
         conn.close()
         st = S.Store(path)
         try:
-            self.assertEqual(st.conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(st.conn.execute("PRAGMA user_version").fetchone()[0], S.SCHEMA_VERSION)
+            cols = {r[1] for r in st.conn.execute("PRAGMA table_info(items)")}
+            self.assertTrue({"event_id", "supersedes", "superseded_by"} <= cols)
+            self.assertEqual(len(st.held_items()), 1)  # old rows survive and are not superseded
             self.assertEqual(st.documents(), [])
         finally:
             st.close()
