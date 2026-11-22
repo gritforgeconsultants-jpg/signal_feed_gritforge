@@ -51,7 +51,7 @@ until the send path is trusted. If `out/alerts.txt` is not empty, stop.
 | Stage | Scope | Status |
 |---|---|---|
 | a | SQLite store + tests | built |
-| b | Collectors: SAM.gov, Austin/San Antonio open data | not started |
+| b | Collectors: SAM.gov, Austin/San Antonio open data, agenda finder | built, awaiting review |
 | c | Confirmation helper + admin queue | not started |
 | d | Issue builder tiers | not started |
 | e | Web app + Stripe test mode | not started |
@@ -87,6 +87,58 @@ verified and the lead link is kept as the secondary link. This replaces
 **Turning a source active.** In `config/allowlist.json`, fill in `domains`,
 `terms_checked` (the date you read the terms and robots.txt) and set
 `"status": "active"`. The next `import` picks it up.
+
+### Collectors (stage b): `scripts/collect.py`
+
+    python scripts/collect.py list                        # which sources would run
+    SAM_API_KEY=... python scripts/collect.py run         # all active sources
+    python scripts/collect.py run --source sam-gov --today 2026-11-20
+    python scripts/collect.py run --record out/fixtures/  # live, and save responses (keys redacted)
+    python scripts/collect.py run --replay tests/fixtures/collectors/sam_gov.json
+
+Each allowlist entry with a `"collector"` block is a collector. The runner:
+- runs a source only if its status is `active`; anything else is a skipped run
+  with no request made. Blocked sources and the four paid networks never run.
+- limits every host to one request per 5 seconds and honors robots.txt on
+  crawled feeds (agenda RSS). Documented APIs are covered by their API terms;
+  record the date you read them in `terms_checked`.
+- writes each run to `runs` and failures to `alerts`: `collector_error`,
+  `schema_change` (a column we read is gone), `stale_dataset` (a permit
+  dataset's newest record is over 14 days old; nothing from that run is
+  stored), `zero_items` (no records two runs in a row).
+- sends items through `Store.upsert_item`, so the same gate decides them.
+- exits 1 if any source errored or was stale, so a scheduler can flag it.
+
+| Source | Type | What it pulls |
+|---|---|---|
+| `sam-gov` | `sam_gov` | Opportunities with place of performance in TX/CO, NAICS 236/237/238, posted in the last 3 days. One query per state. |
+| `austin-permits` | `socrata` | Commercial, multi-family and mixed-use New/Addition permits, last 7 days, $250k+ when a value is filed. |
+| `san-antonio-permits` | `ckan` | Same idea on CKAN. Refuses to run until the dataset details are filled in (below). |
+| councils | `legistar`, `civicplus`, `granicus` | Agenda, minutes and packet links into the `documents` table (not items). Stage c uses them to confirm held items. |
+
+**Env vars:** `SAM_API_KEY` (free: sam.gov, Profile, Public API Key; a
+personal key has a small daily request allowance, and a run uses 2 to 3
+requests). `SIGNAL_FEED_DB` (optional).
+
+**Turning a permit source active.** Read the portal's terms and robots.txt,
+then in the source's allowlist entry set `terms_checked` to the date and
+`status` to `active`. For San Antonio, also fill in the `collector` block from
+the building permits dataset page on data.sanantonio.gov: `resource_id`, `id_field`,
+`date_field`, the `fields` map (address, description, work_class,
+permit_class, contractor, value), and `match` rules such as
+`{"WORK TYPE": ["New", "Addition"]}`. Then run it once with `--record` and
+check the output and `stats` before Friday.
+
+**Adding a council's agenda finder.** Find the platform from the city's
+agenda page and add a block to that council's entry, plus the city's own
+vendor subdomain in `domains` (the store refuses bare `legistar.com`,
+`granicus.com` and so on, since that would let every city on the vendor pass):
+
+    "domains": ["sanantonio.gov", "sanantonio.legistar.com"],
+    "collector": {"type": "legistar", "client": "sanantonio", "bodies": ["City Council"]}
+
+    "collector": {"type": "civicplus", "rss_url": "https://www.city.gov/RSSFeed.aspx?ModID=65&CID=All-0"}
+    "collector": {"type": "granicus", "rss_urls": ["https://city.granicus.com/ViewPublisherRSS.php?view_id=2&mode=agendas"]}
 
 ### Tests
 

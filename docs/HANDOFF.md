@@ -1,4 +1,4 @@
-# Handoff: GritForge Signal Feed build (as of 2026-11-22)
+# Handoff: GritForge Signal Feed build (as of 2026-11-22, after stage b)
 
 Read this first, then `README.md`, `docs/verification-rule.md`, `scripts/signal_feed.py` and `scripts/store.py`.
 
@@ -10,14 +10,14 @@ A paid weekly email of public construction signals (Texas and Colorado first) fo
 
 - Repo: `gritforgeconsultants-jpg/signal_feed_gritforge`
 - Work branch: `claude/wizardly-thompson-932ype` (not merged to `main` yet; `main` has only the original README)
-- Tests: `python -m unittest discover -s tests -v` (stdlib only, Python 3.9+). 67 passing. CI: `.github/workflows/tests.yml`, 3.9 and 3.12, every push.
+- Tests: `python -m unittest discover -s tests -v` (stdlib only, Python 3.9+). 120 passing (checked on 3.9, 3.12 and 3.13). CI: `.github/workflows/tests.yml`, 3.9 and 3.12, every push.
 
 ## Build order (stop after each stage for Arron's review)
 
 | Stage | Scope | Status |
 |---|---|---|
-| a | SQLite store + tests | **built, awaiting review** |
-| b | Collectors: SAM.gov, Austin/San Antonio open data | next |
+| a | SQLite store + tests | approved |
+| b | Collectors: SAM.gov, Austin/San Antonio open data, agenda finder | **built, awaiting review** |
 | c | Confirmation helper + admin queue | |
 | d | Issue builder tiers | |
 | e | Web app (Next.js on Vercel) + Stripe test mode | |
@@ -37,17 +37,35 @@ Only sources with `tier=official` AND `status=active` in `config/allowlist.json`
   - `confirm_item(id, official_url)` exists for stage c; refuses anything not official+active.
   - Alerts written: `schema_change` (unstorable row), `collector_error` (import failed), `marked_confirmed_unverified`.
 
+## Stage b: what was built
+
+- `scripts/collect.py` runner; `scripts/collectors/` one module per source type (`sam_gov`, `socrata`, `ckan`, `agendas`), plus `http.py` and `base.py`. A collector returns ledger-format items; only the runner writes to the store.
+- Runner rules: active-only (else a `skipped` run, no request); blocked and hard-blocked never run; alerts `collector_error`, `schema_change`, `stale_dataset`, `zero_items`; stale permit runs store nothing; exit 1 on error/stale.
+- HTTP: 1 request / 5 s / host on every call; robots.txt on crawled feeds (RFC 9309: 4xx allow, 5xx or unreachable disallow); keys redacted everywhere; `RecordingFetcher` / `ReplayFetcher`.
+- SAM.gov: per-state queries, NAICS filtered client-side, amendments merge via solicitation number in `project`. Award amount goes to `size_usd` and is labeled as the award amount.
+- Permits: dataset details live in the allowlist `collector` block. Freshness query first. Valuation 0 means not filed; the $250k floor only drops permits with a known value. Project = site address, so building and addition permits on one site merge.
+- Agenda finder: Legistar Web API and CivicPlus/Granicus RSS; links go to the new `documents` table (schema v2), never items. 45-day lookback on meeting date because minutes lag.
+- Gate fix in `signal_feed.match_source()`: most specific domain wins (it used to be first-listed). The store now refuses bare vendor domains (`legistar.com` etc.) with an `allowlist_error` alert.
+- Fixtures in `tests/fixtures/collectors/` are hand-built from documented response shapes, not live recordings (no network to these hosts from the build box). Regenerate with `tests/fixtures/make_collector_fixtures.py`; replace with `collect.py run --record` output once each source is live.
+
 ## Findings Arron has been told about
 
 1. Only **SAM.gov** is official+active. The other 16 official sources are `to_confirm`, so a real dry run today yields federal items only. Confirming sources is the product bottleneck.
 2. Kit `verify` re-run into the same `out/` marks everything as seen via `out/seen_keys.txt` and produces an empty issue. Stage d should build from the store, which removes this.
 3. Dedupe normalization splits abbreviations ("H.Q." vs "HQ"); pinned in a test, acceptable for now.
+4. (stage b) First-match domain lookup could have let to_confirm Austin permits pass through the council entry; fixed.
+5. (stage b) San Antonio is CKAN, not Socrata; the Socrata URL in the Clark Iron permits module is why it 404'd there. Resource id and columns still unknown.
+6. (stage b) The Clark Iron SAM module sends NAICS as `naicsCode=` with a comma list; the documented parameter is `ncode`, one code. Worth checking on that side; not touched from here.
+7. (stage b) Alerts are not deduplicated: a source failing every run adds an alert each run. Stage f should collapse repeats.
 
 ## Open items (ask Arron if not yet answered)
 
-1. **Real ledger** (`/workspace/commercial-growth/04-ledger/events.jsonl`) not yet provided; needed for the stage a dry run and the final "done" check. Only one real example of the format has been seen.
-2. **`tools/sam_pull.py`** is referenced in the allowlist as "already wired" but was not in the kit. If absent, build the SAM.gov collector from patterns in `clean_web_engine/cwe/intel/sam_gov.py` (query logic only).
-3. Stage a review sign-off.
+1. **Real ledger** (`/workspace/commercial-growth/04-ledger/events.jsonl`) still not provided; stage a dry run not done. Needed for the final "done" check.
+2. **`tools/sam_pull.py`** was not provided; the SAM collector was built new from the query pattern in `clean_web_engine` (copied, not imported). If the script exists, compare its query before retiring it.
+3. Stage b review sign-off.
+3a. **First live SAM run** needs `SAM_API_KEY` and network to api.sam.gov; run with `--record` and compare to the fixture. Also set `terms_checked` on sam-gov (active with an empty date today).
+3b. Austin and San Antonio stay `to_confirm` until Arron reads terms. San Antonio also needs its resource id and columns.
+3c. No council has a collector block yet: each needs its platform and vendor subdomain found by hand.
 4. Dedupe window anchored on first sighting (a vote 15+ days after the announcement is a new item). Arron has not objected.
 5. Clark Iron repo still has the Signal Feed commits on its unmerged `claude/wizardly-thompson-932ype` branch (force-push was blocked). Arron is deleting that branch or leaving it unmerged. Do not touch it from here.
 
@@ -85,4 +103,4 @@ Collectors, one module per source type, each returning ledger-format items with 
 
 ## Env vars so far
 
-- `SIGNAL_FEED_DB` (optional). Stage b adds `SAM_API_KEY`.
+- `SIGNAL_FEED_DB` (optional), `SAM_API_KEY` (sam-gov collector). Optional: a Legistar token via the env var named in a block's `token_env`.
