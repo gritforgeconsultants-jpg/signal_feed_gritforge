@@ -27,6 +27,8 @@ FIELD_ALIASES = {  # ledger name -> name used here
     "city": "place", "location": "place", "event_date": "date",
     "url": "source_url", "link": "source_url", "source": "source_name",
     "summary": "action", "title": "project",
+    # growth-signal watch ledger (04-ledger/events.jsonl)
+    "observed_at": "date", "metro_or_submarket": "place", "name": "project",
 }
 REQUIRED = ("date", "place", "state", "action", "source_url")
 NON_OFFICIAL_TYPES = {"trade_press", "ai_summary", "blog", "secondary", "lead"}
@@ -45,8 +47,21 @@ def load_jsonl(path):
             raw = json.loads(line)
         except json.JSONDecodeError as e:
             sys.exit(f"Ledger line {n} is not valid JSON: {e}")
-        out.append({FIELD_ALIASES.get(k, k): v for k, v in raw.items()})
+        out.append(apply_aliases(raw))
     return out
+
+
+def apply_aliases(raw):
+    """Rename ledger fields. A field already using the canonical name wins over an alias."""
+    it = {k: v for k, v in raw.items() if k not in FIELD_ALIASES}
+    for k, v in raw.items():
+        if k in FIELD_ALIASES:
+            it.setdefault(FIELD_ALIASES[k], v)
+    # observed_at is a timestamp in the watch ledger; the gate and dedupe use the day.
+    d = str(it.get("date") or "")
+    if re.match(r"\d{4}-\d{2}-\d{2}[T ]", d):
+        it["date"] = d[:10]
+    return it
 
 
 def write_jsonl(path, items):
